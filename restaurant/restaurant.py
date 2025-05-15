@@ -21,14 +21,14 @@ async def get_db_connection():
         logger.error(f"❌ فشل الاتصال بقاعدة البيانات: {e}")
         return None
 
-# ✅ إنشاء جدول الطلبات
 async def initialize_database():
     try:
         db = await get_db_connection()
         if db is None:
-            logger.error("❌ الاتصال بقاعدة البيانات فشل. لم يتم إنشاء الجدول.")
+            logger.error("❌ الاتصال بقاعدة البيانات فشل. لم يتم إنشاء الجداول.")
             return
 
+        # إنشاء جدول الطلبات
         await db.execute("""
             CREATE TABLE IF NOT EXISTS orders (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -39,12 +39,24 @@ async def initialize_database():
                 timestamp TEXT
             )
         """)
+
+        # إنشاء جدول الدليفري
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS delivery_persons (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                restaurant TEXT NOT NULL,
+                name TEXT NOT NULL,
+                phone TEXT NOT NULL
+            )
+        """)
+
         await db.commit()
         await db.close()
 
-        logger.info("✅ تم التأكد من وجود جدول الطلبات.")
+        logger.info("✅ تم التأكد من وجود جدول الطلبات وجدول الدليفري.")
+
     except Exception as e:
-        logger.error(f"❌ خطأ أثناء إنشاء جدول الطلبات: {e}")
+        logger.error(f"❌ خطأ أثناء إنشاء الجداول: {e}")
 
 
 # 🔹 إعداد سجل الأخطاء
@@ -366,12 +378,12 @@ async def handle_time_selection(update: Update, context: CallbackContext):
     # استخراج الوقت ومعرف الطلب
     _, time_selected, order_id = query.data.split("_")
 
-    # تحديث الأزرار
+    # تحديث الأزرار مع إضافة زر "🚗 جاهز ليطلع"
     keyboard = [
         [InlineKeyboardButton(f"✅ {t} دقيقة" if str(t) == time_selected else f"{t} دقيقة", callback_data=f"time_{t}_{order_id}")]
         for t in [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 60, 75, 90]
     ]
-    keyboard.append([InlineKeyboardButton("📌 أكثر من 90 دقيقة", callback_data=f"time_90+_{order_id}")])
+    keyboard.append([InlineKeyboardButton("🚗 جاهز ليطلع", callback_data=f"ready_{order_id}")])
     keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data=f"back_{order_id}")])
     reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -380,6 +392,7 @@ async def handle_time_selection(update: Update, context: CallbackContext):
     except Exception as e:
         logger.warning(f"⚠️ لم يتم تحديث الأزرار: {e}")
 
+    # التحقق من الطلب داخل الذاكرة
     order_data = pending_orders.get(order_id)
     if not order_data:
         logger.warning(f"⚠️ الطلب غير موجود في pending_orders: {order_id}")
@@ -399,7 +412,7 @@ async def handle_time_selection(update: Update, context: CallbackContext):
 
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # ✅ تسجيل الطلب بـ aiosqlite
+    # ✅ تسجيل الطلب في قاعدة البيانات
     try:
         async with await aiosqlite.connect("restaurant_orders.db") as db:
             await db.execute("""
@@ -411,7 +424,7 @@ async def handle_time_selection(update: Update, context: CallbackContext):
     except Exception as e:
         logger.error(f"❌ فشل تسجيل الطلب في قاعدة البيانات: {e}")
 
-    # ✅ إرسال إشعار للمستخدم
+    # ✅ إرسال إشعار للمستخدم في القناة
     try:
         await context.bot.send_message(
             chat_id=CHANNEL_ID,
@@ -425,11 +438,8 @@ async def handle_time_selection(update: Update, context: CallbackContext):
     except Exception as e:
         logger.error(f"❌ فشل في إرسال إشعار القبول إلى القناة: {e}")
 
-    # ✅ حذف الطلب من pending_orders
-    pending_orders.pop(order_id, None)
-
-
-
+    # ❌ لا نحذف الطلب من pending_orders الآن
+    # نحتاجه لاحقًا عند إسناده لدليفري باستخدام زر "🚗 جاهز ليطلع"
 
 
 
@@ -690,6 +700,127 @@ async def handle_standard_cancellation_notice(update: Update, context: CallbackC
         pending_orders.pop(order_id, None)
 
 
+async def handle_delivery_menu(update: Update, context: CallbackContext):
+    reply_keyboard = [["➕ إضافة دليفري", "❌ حذف دليفري"], ["🔙 رجوع"]]
+    await update.message.reply_text(
+        "📦 إدارة الدليفري:\nاختر الإجراء المطلوب:",
+        reply_markup=ReplyKeyboardMarkup(reply_keyboard, resize_keyboard=True)
+    )
+    context.user_data["delivery_action"] = "menu"
+
+async def handle_add_delivery(update: Update, context: CallbackContext):
+    text = update.message.text
+
+    # 🔙 الرجوع من أي خطوة
+    if text == "🔙 رجوع":
+        context.user_data.pop("delivery_action", None)
+        context.user_data.pop("new_delivery_name", None)
+        reply_keyboard = [["➕ إضافة دليفري", "❌ حذف دليفري"], ["🔙 رجوع"]]
+        await update.message.reply_text("⬅️ تم الرجوع إلى قائمة الدليفري.", reply_markup=ReplyKeyboardMarkup(reply_keyboard, resize_keyboard=True))
+        return
+
+    action = context.user_data.get("delivery_action")
+
+    # 🧑‍💼 المرحلة 1: استلام الاسم
+    if action == "adding_name":
+        context.user_data["new_delivery_name"] = text
+        context.user_data["delivery_action"] = "adding_phone"
+        await update.message.reply_text("📞 ما رقم الهاتف؟", reply_markup=ReplyKeyboardMarkup([["🔙 رجوع"]], resize_keyboard=True))
+
+    # ☎️ المرحلة 2: استلام الرقم وحفظ البيانات
+    elif action == "adding_phone":
+        name = context.user_data.get("new_delivery_name")
+        phone = text
+        restaurant_name = context.user_data.get("restaurant")  # تأكد أنه مخزن مسبقًا
+
+        try:
+            async with await get_db_connection() as db:
+                await db.execute(
+                    "INSERT INTO delivery_persons (restaurant, name, phone) VALUES (?, ?, ?)",
+                    (restaurant_name, name, phone)
+                )
+                await db.commit()
+
+            # ✅ إنهاء العملية
+            context.user_data.pop("delivery_action", None)
+            context.user_data.pop("new_delivery_name", None)
+
+            reply_keyboard = [["➕ إضافة دليفري", "❌ حذف دليفري"], ["🔙 رجوع"]]
+            await update.message.reply_text(
+                f"✅ تم إضافة الدليفري:\n🧑‍💼 {name}\n📞 {phone}",
+                reply_markup=ReplyKeyboardMarkup(reply_keyboard, resize_keyboard=True)
+            )
+
+        except Exception as e:
+            logger.error(f"❌ خطأ أثناء إضافة الدليفري: {e}")
+            await update.message.reply_text("⚠️ حدث خطأ أثناء حفظ الدليفري. حاول مرة أخرى.")
+
+async def ask_add_delivery_name(update: Update, context: CallbackContext):
+    context.user_data["delivery_action"] = "adding_name"
+    await update.message.reply_text("🧑‍💼 ما اسم الدليفري؟", reply_markup=ReplyKeyboardMarkup([["🔙 رجوع"]], resize_keyboard=True))
+
+async def handle_delete_delivery_menu(update: Update, context: CallbackContext):
+    restaurant_name = context.user_data.get("restaurant")
+
+    try:
+        async with await get_db_connection() as db:
+            async with db.execute(
+                "SELECT name FROM delivery_persons WHERE restaurant = ?", (restaurant_name,)
+            ) as cursor:
+                rows = await cursor.fetchall()
+
+        if not rows:
+            await update.message.reply_text("⚠️ لا يوجد أي دليفري مسجل حالياً.", reply_markup=ReplyKeyboardMarkup(
+                [["➕ إضافة دليفري", "❌ حذف دليفري"], ["🔙 رجوع"]], resize_keyboard=True
+            ))
+            return
+
+        names = [row[0] for row in rows]
+        context.user_data["delivery_action"] = "deleting"
+        await update.message.reply_text(
+            "🗑 اختر اسم الدليفري الذي تريد حذفه:",
+            reply_markup=ReplyKeyboardMarkup([[name] for name in names] + [["🔙 رجوع"]], resize_keyboard=True)
+        )
+
+    except Exception as e:
+        logger.error(f"❌ خطأ أثناء جلب قائمة الدليفري للحذف: {e}")
+        await update.message.reply_text("⚠️ حدث خطأ أثناء عرض القائمة.")
+
+
+async def handle_delete_delivery_choice(update: Update, context: CallbackContext):
+    text = update.message.text
+
+    # الرجوع
+    if text == "🔙 رجوع":
+        context.user_data.pop("delivery_action", None)
+        reply_keyboard = [["➕ إضافة دليفري", "❌ حذف دليفري"], ["🔙 رجوع"]]
+        await update.message.reply_text("⬅️ تم الرجوع إلى قائمة الدليفري.", reply_markup=ReplyKeyboardMarkup(reply_keyboard, resize_keyboard=True))
+        return
+
+    if context.user_data.get("delivery_action") != "deleting":
+        return  # تجاهل
+
+    restaurant_name = context.user_data.get("restaurant")
+
+    try:
+        async with await get_db_connection() as db:
+            await db.execute(
+                "DELETE FROM delivery_persons WHERE restaurant = ? AND name = ?",
+                (restaurant_name, text)
+            )
+            await db.commit()
+
+        context.user_data.pop("delivery_action", None)
+
+        reply_keyboard = [["➕ إضافة دليفري", "❌ حذف دليفري"], ["🔙 رجوع"]]
+        await update.message.reply_text(
+            f"✅ تم حذف الدليفري: {text}",
+            reply_markup=ReplyKeyboardMarkup(reply_keyboard, resize_keyboard=True)
+        )
+
+    except Exception as e:
+        logger.error(f"❌ خطأ أثناء حذف الدليفري: {e}")
+        await update.message.reply_text("⚠️ حدث خطأ أثناء حذف الدليفري.")
 
 
 
@@ -918,6 +1049,12 @@ async def run_bot():
     # ✅ أزرار التفاعل
     app.add_handler(CallbackQueryHandler(button, pattern=r"^(accept|reject|confirmreject|back|complain|report_(delivery|phone|location|other))_.+"))
     app.add_handler(CallbackQueryHandler(handle_time_selection, pattern=r"^time_\d+_.+"))
+
+    app.add_handler(MessageHandler(filters.TEXT & filters.Regex("🚚 الدليفري"), handle_delivery_menu))
+    app.add_handler(MessageHandler(filters.TEXT & filters.Regex("➕ إضافة دليفري"), ask_add_delivery_name))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_add_delivery))  
+    app.add_handler(MessageHandler(filters.TEXT & filters.Regex("❌ حذف دليفري"), handle_delete_delivery_menu))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_delete_delivery_choice))
 
     # ✅ أوامر الإحصائيات
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex("📊 عدد الطلبات اليوم والدخل"), handle_today_stats))

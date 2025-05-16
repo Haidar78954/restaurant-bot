@@ -1,1 +1,1 @@
-python Manager.py
+python restaurant.py

@@ -1,6 +1,7 @@
 import logging
 import re
 import os
+import json
 import datetime
 import aiosqlite
 import asyncio
@@ -9,6 +10,10 @@ from telegram.error import TelegramError
 from telegram import ReplyKeyboardMarkup, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, CallbackContext
 import traceback
+
+# ✅ إعداد سجل الأخطاء
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # ✅ مسار قاعدة البيانات
 DB_PATH = "restaurant_orders.db"
@@ -21,6 +26,7 @@ async def get_db_connection():
         logger.error(f"❌ فشل الاتصال بقاعدة البيانات: {e}")
         return None
 
+# ✅ إنشاء الجداول الأساسية
 async def initialize_database():
     try:
         db = await get_db_connection()
@@ -28,7 +34,6 @@ async def initialize_database():
             logger.error("❌ الاتصال بقاعدة البيانات فشل. لم يتم إنشاء الجداول.")
             return
 
-        # إنشاء جدول الطلبات
         await db.execute("""
             CREATE TABLE IF NOT EXISTS orders (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -40,7 +45,6 @@ async def initialize_database():
             )
         """)
 
-        # إنشاء جدول الدليفري
         await db.execute("""
             CREATE TABLE IF NOT EXISTS delivery_persons (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -52,31 +56,40 @@ async def initialize_database():
 
         await db.commit()
         await db.close()
-
         logger.info("✅ تم التأكد من وجود جدول الطلبات وجدول الدليفري.")
-
     except Exception as e:
         logger.error(f"❌ خطأ أثناء إنشاء الجداول: {e}")
 
+# ✅ تحميل الإعدادات من ملفات JSON داخل مجلد config
+def load_config():
+    current_dir = os.path.dirname(__file__)
+    config_dir = os.path.join(current_dir, "config")
 
-# 🔹 إعداد سجل الأخطاء
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+    json_files = [f for f in os.listdir(config_dir) if f.endswith(".json")]
+    if not json_files:
+        raise FileNotFoundError("❌ لا يوجد أي ملف إعداد في مجلد config.")
 
-# 🔹 القيم الثابتة (← يفضل نقلها لاحقًا إلى settings.py)
-TOKEN = '7114672578:AAEz5UZMD2igBFRhJrs9Rb1YCS4fkku-Jjc'
-CASHIER_CHAT_ID = 5065182020
-CHANNEL_ID = -1002471456650
-RESTAURANT_COMPLAINTS_CHAT_ID = -4791648333
+    config_path = os.path.join(config_dir, json_files[0])
+    with open(config_path, "r", encoding="utf-8") as f:
+        config = json.load(f)
 
-# 🔹 إدارة الطلبات المؤقتة
+    return config
+
+# ✅ متغيرات عامة سيتم تحميلها لاحقًا من config
+TOKEN = None
+CASHIER_CHAT_ID = None
+CHANNEL_ID = None
+RESTAURANT_COMPLAINTS_CHAT_ID = None
+
+# ✅ متغيرات مؤقتة لإدارة الطلبات
 pending_orders = {}
 pending_locations = {}
 
-# ✅ دالة تحليل النجوم (يمكن حذفها لاحقًا إن لم تُستخدم)
+# ✅ دالة تحليل النجوم من التقييمات
 def extract_stars(text: str) -> str:
     match = re.search(r"تقييمه بـ (\⭐+)", text)
     return match.group(1) if match else "⭐️"
+
 
 
 
@@ -1019,7 +1032,17 @@ async def error_handler(update: object, context: CallbackContext) -> None:
 
 # ✅ **إعداد البوت وتشغيله**
 async def run_bot():
-    app = Application.builder().token("7114672578:AAEz5UZMD2igBFRhJrs9Rb1YCS4fkku-Jjc").build()
+    # ✅ تحميل إعدادات المطعم من ملف JSON
+    config = load_config()
+
+    global TOKEN, CASHIER_CHAT_ID, CHANNEL_ID, RESTAURANT_COMPLAINTS_CHAT_ID
+    TOKEN = config["token"]
+    CASHIER_CHAT_ID = int(config["cashier_id"])
+    CHANNEL_ID = int(config["channel_id"])
+    RESTAURANT_COMPLAINTS_CHAT_ID = int(config.get("complaints_channel_id", CHANNEL_ID))  # fallback
+
+    # ✅ بناء التطبيق بالتوكن المحمّل
+    app = Application.builder().token(TOKEN).build()
 
     # ✅ إنشاء قاعدة البيانات
     await initialize_database()
@@ -1027,26 +1050,20 @@ async def run_bot():
     # ✅ أوامر البوت
     app.add_handler(CommandHandler("start", start))
 
-    # ✅ إشعار تقييم الطلب من الزبون
     app.add_handler(MessageHandler(
         filters.ChatType.CHANNEL & filters.Regex(r"^✅ الزبون استلم طلبه رقم \d+ وقام بتقييمه بـ .+?\n📌 معرف الطلب: "), 
         handle_order_delivered_rating
     ))
 
-    # ✅ معالجة الأخطاء
     app.add_error_handler(error_handler)
 
-    # ✅ إشعارات الإلغاء
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.Regex("تردد الزبون"), handle_standard_cancellation_notice))
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.Regex("تأخر المطعم.*تم إنشاء تقرير"), handle_report_cancellation_notice))
-
-    # ✅ رسائل التذكير
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.Regex(r"تذكير من الزبون"), handle_channel_reminder))
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.Regex(r"كم يتبقى.*الطلب رقم"), handle_time_left_question))
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.LOCATION, handle_channel_location))
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.TEXT, handle_channel_order))
 
-    # ✅ أزرار التفاعل
     app.add_handler(CallbackQueryHandler(button, pattern=r"^(accept|reject|confirmreject|back|complain|report_(delivery|phone|location|other))_.+"))
     app.add_handler(CallbackQueryHandler(handle_time_selection, pattern=r"^time_\d+_.+"))
 
@@ -1056,7 +1073,6 @@ async def run_bot():
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex("❌ حذف دليفري"), handle_delete_delivery_menu))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_delete_delivery_choice))
 
-    # ✅ أوامر الإحصائيات
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex("📊 عدد الطلبات اليوم والدخل"), handle_today_stats))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex("📅 عدد الطلبات أمس والدخل"), handle_yesterday_stats))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex("🗓️ طلبات الشهر الحالي"), handle_current_month_stats))

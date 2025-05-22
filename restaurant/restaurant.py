@@ -1,4 +1,8 @@
+import sys
+import json
 import logging
+
+
 import re
 import os
 import traceback
@@ -90,11 +94,26 @@ async def initialize_database():
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# 🔹 القيم الثابتة (← يفضل نقلها لاحقًا إلى settings.py)
-TOKEN = '7114672578:AAEz5UZMD2igBFRhJrs9Rb1YCS4fkku-Jjc'
-CASHIER_CHAT_ID = 5065182020
-CHANNEL_ID = -1002471456650
-RESTAURANT_COMPLAINTS_CHAT_ID = -4791648333
+
+
+
+if len(sys.argv) < 2:
+    print("❌ يرجى تمرير اسم ملف الإعداد: مثال ➜ python3 restaurant.py Almalek")
+    sys.exit(1)
+
+restaurant_key = sys.argv[1]
+CONFIG_FILE = f"config/{restaurant_key}.json"
+
+with open(CONFIG_FILE, encoding="utf-8") as f:
+    config = json.load(f)
+
+TOKEN = config["token"]
+CHANNEL_ID = config["channel_id"]
+CASHIER_CHAT_ID = config["cashier_id"]
+RESTAURANT_COMPLAINTS_CHAT_ID = config["complaints_channel_id"]
+RESTAURANT_NAME = config["restaurant_name"]
+
+
 
 
 
@@ -1227,7 +1246,7 @@ if __name__ == "__main__":
     import nest_asyncio
     nest_asyncio.apply()
 
-    import logging
+    
     logging.basicConfig(
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         level=logging.INFO

@@ -1,2 +1,3 @@
 python-telegram-bot==21
 apscheduler
+aiomysql>=0.1.1

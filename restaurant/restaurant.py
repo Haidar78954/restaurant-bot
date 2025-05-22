@@ -1002,6 +1002,67 @@ async def handle_today_stats(update: Update, context: CallbackContext):
         logger.error(f"❌ فشل استخراج إحصائيات اليوم: {e}")
 
 
+async def handle_current_month_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    today = datetime.datetime.now()
+    first_day = today.replace(day=1).date().isoformat()
+    last_day = today.date().isoformat()
+
+    try:
+        async with get_db_connection() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute("""
+                    SELECT COUNT(*), SUM(total_price)
+                    FROM orders
+                    WHERE DATE(timestamp) BETWEEN %s AND %s
+                """, (first_day, last_day))
+                result = await cursor.fetchone()
+
+        count = result[0] or 0
+        total = result[1] or 0
+
+        await update.message.reply_text(
+            f"🗓️ *إحصائيات الشهر الحالي:*\n\n"
+            f"🔢 عدد الطلبات: {count}\n"
+            f"💰 الدخل الكلي: {total} ل.س",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"❌ خطأ أثناء استخراج إحصائيات الشهر الحالي: {e}")
+        await update.message.reply_text("❌ حدث خطأ أثناء استخراج البيانات.")
+
+
+async def handle_last_month_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    today = datetime.datetime.now()
+    first_day_this_month = today.replace(day=1)
+    last_day_last_month = first_day_this_month - datetime.timedelta(days=1)
+    first_day_last_month = last_day_last_month.replace(day=1)
+
+    start_date = first_day_last_month.date().isoformat()
+    end_date = last_day_last_month.date().isoformat()
+
+    try:
+        async with get_db_connection() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute("""
+                    SELECT COUNT(*), SUM(total_price)
+                    FROM orders
+                    WHERE DATE(timestamp) BETWEEN %s AND %s
+                """, (start_date, end_date))
+                result = await cursor.fetchone()
+
+        count = result[0] or 0
+        total = result[1] or 0
+
+        await update.message.reply_text(
+            f"📆 *إحصائيات الشهر الماضي:*\n\n"
+            f"🔢 عدد الطلبات: {count}\n"
+            f"💰 الدخل الكلي: {total} ل.س",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"❌ خطأ أثناء استخراج إحصائيات الشهر الماضي: {e}")
+        await update.message.reply_text("❌ حدث خطأ أثناء استخراج البيانات.")
+
 
 
 async def handle_current_year_stats(update: Update, context: CallbackContext):

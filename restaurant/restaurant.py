@@ -945,6 +945,35 @@ async def handle_delete_delivery_choice(update: Update, context: CallbackContext
         await update.message.reply_text("⚠️ حدث خطأ أثناء حذف الدليفري.")
 
 
+async def handle_yesterday_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    yesterday = (datetime.datetime.now() - datetime.timedelta(days=1)).date()
+
+    try:
+        async with get_db_connection() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute("""
+                    SELECT COUNT(*), SUM(total_price)
+                    FROM orders
+                    WHERE DATE(timestamp) = %s
+                """, (yesterday,))
+                result = await cursor.fetchone()
+
+        count = result[0] or 0
+        total = result[1] or 0
+
+        await update.message.reply_text(
+            f"📅 *إحصائيات يوم أمس:*\n\n"
+            f"🔢 عدد الطلبات: {count}\n"
+            f"💰 الدخل الكلي: {total} ل.س",
+            parse_mode="Markdown"
+        )
+
+    except Exception as e:
+        logger.error(f"❌ فشل استخراج إحصائيات أمس: {e}")
+        await update.message.reply_text("❌ حدث خطأ أثناء استخراج الإحصائيات.")
+
+
+
 async def handle_today_stats(update: Update, context: CallbackContext):
     today = datetime.datetime.now().strftime('%Y-%m-%d')
 
@@ -969,6 +998,8 @@ async def handle_today_stats(update: Update, context: CallbackContext):
         )
     except Exception as e:
         logger.error(f"❌ فشل استخراج إحصائيات اليوم: {e}")
+
+
 
 
 async def handle_current_year_stats(update: Update, context: CallbackContext):

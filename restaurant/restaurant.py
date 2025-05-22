@@ -206,11 +206,20 @@ async def update_order_status(order_id, status):
 async def start(update: Update, context: CallbackContext):
     try:
         await update.message.reply_text(
-            "✅ بوت المطعم جاهز لاستقبال الطلبات من القناة!",
+            "✅ بوت المطعم جاهز لاستقبال الطلبات من الزبائن!",
             reply_markup=get_admin_main_menu()
         )
     except Exception as e:
         logger.error(f"❌ خطأ في دالة start: {e}")
+
+
+main_menu_keyboard = ReplyKeyboardMarkup(
+    [
+        ["📦 الطلبات الحالية", "🚚 الدليفري"],
+        ["🔁 تحديث", "❌ خروج"]
+    ],
+    resize_keyboard=True
+)
 
 
 # ✅ استقبال طلب من القناة

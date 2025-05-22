@@ -1,95 +1,202 @@
 import logging
 import re
 import os
-import json
+import traceback
 import datetime
-import aiosqlite
+import aiomysql
+import pymysql
 import asyncio
 import nest_asyncio
 from telegram.error import TelegramError
 from telegram import ReplyKeyboardMarkup, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, CallbackContext
-import traceback
-
-# ✅ إعداد سجل الأخطاء
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+from contextlib import asynccontextmanager
 
 # ✅ مسار قاعدة البيانات
 DB_PATH = "restaurant_orders.db"
 
-# ✅ دالة اتصال آمن بـ aiosqlite
+@asynccontextmanager
 async def get_db_connection():
+    conn = await aiomysql.connect(
+        host=DB_HOST,
+        user=DB_USER,
+        password=DB_PASSWORD,
+        db=DB_NAME,
+        port=DB_PORT,
+        charset='utf8mb4',
+        autocommit=False
+    )
     try:
-        return await aiosqlite.connect(DB_PATH)
-    except Exception as e:
-        logger.error(f"❌ فشل الاتصال بقاعدة البيانات: {e}")
-        return None
+        yield conn
+    finally:
+        conn.close()
 
-# ✅ إنشاء الجداول الأساسية
+        
 async def initialize_database():
     try:
-        db = await get_db_connection()
-        if db is None:
-            logger.error("❌ الاتصال بقاعدة البيانات فشل. لم يتم إنشاء الجداول.")
-            return
+        # إنشاء الاتصال بقاعدة البيانات
+        conn = pymysql.connect(
+            host=DB_HOST,
+            user=DB_USER,
+            password=DB_PASSWORD,
+            charset='utf8mb4'
+        )
+        cursor = conn.cursor()
 
-        await db.execute("""
+        # إنشاء قاعدة البيانات إذا لم تكن موجودة
+        cursor.execute(f"CREATE DATABASE IF NOT EXISTS {DB_NAME} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
+        cursor.execute(f"USE {DB_NAME}")
+
+        # إنشاء جدول الطلبات
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS orders (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                order_id TEXT,
-                order_number INTEGER,
-                restaurant TEXT,
-                total_price INTEGER,
-                timestamp TEXT
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                order_id VARCHAR(255),
+                order_number INT,
+                restaurant VARCHAR(255),
+                total_price INT,
+                timestamp DATETIME
             )
         """)
 
-        await db.execute("""
+        # إنشاء جدول الدليفري
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS delivery_persons (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                restaurant TEXT NOT NULL,
-                name TEXT NOT NULL,
-                phone TEXT NOT NULL
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                restaurant VARCHAR(255) NOT NULL,
+                name VARCHAR(255) NOT NULL,
+                phone VARCHAR(20) NOT NULL
             )
         """)
 
-        await db.commit()
-        await db.close()
+        conn.commit()
+        conn.close()
+
         logger.info("✅ تم التأكد من وجود جدول الطلبات وجدول الدليفري.")
+
     except Exception as e:
         logger.error(f"❌ خطأ أثناء إنشاء الجداول: {e}")
 
-# ✅ تحميل الإعدادات من ملفات JSON داخل مجلد config
-def load_config():
-    current_dir = os.path.dirname(__file__)
-    config_dir = os.path.join(current_dir, "config")
 
-    json_files = [f for f in os.listdir(config_dir) if f.endswith(".json")]
-    if not json_files:
-        raise FileNotFoundError("❌ لا يوجد أي ملف إعداد في مجلد config.")
+        logger.info("✅ تم التأكد من وجود جدول الطلبات وجدول الدليفري.")
 
-    config_path = os.path.join(config_dir, json_files[0])
-    with open(config_path, "r", encoding="utf-8") as f:
-        config = json.load(f)
+    except Exception as e:
+        logger.error(f"❌ خطأ أثناء إنشاء الجداول: {e}")
 
-    return config
 
-# ✅ متغيرات عامة سيتم تحميلها لاحقًا من config
-TOKEN = None
-CASHIER_CHAT_ID = None
-CHANNEL_ID = None
-RESTAURANT_COMPLAINTS_CHAT_ID = None
+# 🔹 إعداد سجل الأخطاء
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# ✅ متغيرات مؤقتة لإدارة الطلبات
+# 🔹 القيم الثابتة (← يفضل نقلها لاحقًا إلى settings.py)
+TOKEN = '7114672578:AAEz5UZMD2igBFRhJrs9Rb1YCS4fkku-Jjc'
+CASHIER_CHAT_ID = 5065182020
+CHANNEL_ID = -1002471456650
+RESTAURANT_COMPLAINTS_CHAT_ID = -4791648333
+
+
+
+# إضافة هذه المتغيرات
+DB_HOST = "localhost"
+DB_PORT = 3306
+DB_USER = "botuser"
+DB_PASSWORD = "strongpassword123"
+DB_NAME = "telegram_bot"
+
+
+
+# 🔹 إدارة الطلبات المؤقتة
 pending_orders = {}
 pending_locations = {}
 
-# ✅ دالة تحليل النجوم من التقييمات
+# ✅ دالة تحليل النجوم (يمكن حذفها لاحقًا إن لم تُستخدم)
 def extract_stars(text: str) -> str:
     match = re.search(r"تقييمه بـ (\⭐+)", text)
     return match.group(1) if match else "⭐️"
 
+
+# دالة حفظ حالة المحادثة الموحدة
+async def save_conversation_state(user_id, state_data):
+    """حفظ حالة المحادثة في قاعدة البيانات"""
+    try:
+        async with get_db_connection() as conn:
+            async with conn.cursor() as cursor:
+                # تحويل البيانات إلى JSON
+                json_data = json.dumps(state_data, ensure_ascii=False)
+
+                # استخدام REPLACE INTO لإضافة أو تحديث البيانات
+                await cursor.execute(
+                    "REPLACE INTO conversation_states (user_id, state_data) VALUES (%s, %s)",
+                    (user_id, json_data)
+                )
+            await conn.commit()
+        return True
+    except Exception as e:
+        logger.error(f"خطأ في حفظ حالة المحادثة: {e}")
+        return False
+
+# دالة استرجاع حالة المحادثة الموحدة
+async def get_conversation_state(user_id):
+    """استرجاع حالة المحادثة من قاعدة البيانات"""
+    try:
+        async with get_db_connection() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute(
+                    "SELECT state_data FROM conversation_states WHERE user_id = %s",
+                    (user_id,)
+                )
+                result = await cursor.fetchone()
+
+                if not result:
+                    return {}
+
+                return json.loads(result[0])
+    except Exception as e:
+        logger.error(f"خطأ في استرجاع حالة المحادثة: {e}")
+        return {}
+
+# دالة إنشاء طلب جديد
+async def create_order(user_id, restaurant_id, items, total_price):
+    """إنشاء طلب جديد في قاعدة البيانات"""
+    try:
+        order_id = str(uuid.uuid4())
+
+        async with get_db_connection() as conn:
+            async with conn.cursor() as cursor:
+                # إنشاء الطلب الرئيسي
+                await cursor.execute(
+                    "INSERT INTO orders (order_id, user_id, restaurant_id, total_price) VALUES (%s, %s, %s, %s)",
+                    (order_id, user_id, restaurant_id, total_price)
+                )
+
+                # إضافة عناصر الطلب
+                for item in items:
+                    await cursor.execute(
+                        "INSERT INTO order_items (order_id, meal_id, quantity, price, options) VALUES (%s, %s, %s, %s, %s)",
+                        (order_id, item['meal_id'], item['quantity'], item['price'], json.dumps(item.get('options', {})))
+                    )
+
+            await conn.commit()
+        return order_id
+    except Exception as e:
+        logger.error(f"خطأ في إنشاء طلب جديد: {e}")
+        return None
+
+# دالة تحديث حالة الطلب
+async def update_order_status(order_id, status):
+    """تحديث حالة الطلب في قاعدة البيانات"""
+    try:
+        async with get_db_connection() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute(
+                    "UPDATE orders SET status = %s WHERE order_id = %s",
+                    (status, order_id)
+                )
+            await conn.commit()
+        return True
+    except Exception as e:
+        logger.error(f"خطأ في تحديث حالة الطلب: {e}")
+        return False
 
 
 
@@ -427,15 +534,17 @@ async def handle_time_selection(update: Update, context: CallbackContext):
 
     # ✅ تسجيل الطلب في قاعدة البيانات
     try:
-        async with await aiosqlite.connect("restaurant_orders.db") as db:
-            await db.execute("""
-                INSERT INTO orders (order_id, order_number, restaurant, total_price, timestamp)
-                VALUES (?, ?, ?, ?, ?)
-            """, (order_id, order_number, restaurant, total_price, timestamp))
-            await db.commit()
+        async with get_db_connection() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute("""
+                    INSERT INTO orders (order_id, order_number, restaurant, total_price, timestamp)
+                    VALUES (%s, %s, %s, %s, %s)
+                """, (order_id, order_number, restaurant, total_price, timestamp))
+            await conn.commit()
             logger.info(f"✅ تم تسجيل الطلب في قاعدة البيانات: {order_id}")
     except Exception as e:
         logger.error(f"❌ فشل تسجيل الطلب في قاعدة البيانات: {e}")
+
 
     # ✅ إرسال إشعار للمستخدم في القناة
     try:
@@ -836,18 +945,17 @@ async def handle_delete_delivery_choice(update: Update, context: CallbackContext
         await update.message.reply_text("⚠️ حدث خطأ أثناء حذف الدليفري.")
 
 
-
-
 async def handle_today_stats(update: Update, context: CallbackContext):
     today = datetime.datetime.now().strftime('%Y-%m-%d')
 
     try:
-        async with aiosqlite.connect("restaurant_orders.db") as db:
-            async with db.execute("""
-                SELECT COUNT(*), SUM(total_price) 
-                FROM orders 
-                WHERE DATE(timestamp) = ?
-            """, (today,)) as cursor:
+        async with get_db_connection() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute("""
+                    SELECT COUNT(*), SUM(total_price) 
+                    FROM orders 
+                    WHERE DATE(timestamp) = %s
+                """, (today,))
                 result = await cursor.fetchone()
 
         count = result[0] or 0
@@ -862,86 +970,6 @@ async def handle_today_stats(update: Update, context: CallbackContext):
     except Exception as e:
         logger.error(f"❌ فشل استخراج إحصائيات اليوم: {e}")
 
-async def handle_yesterday_stats(update: Update, context: CallbackContext):
-    yesterday = (datetime.datetime.now() - datetime.timedelta(days=1)).date()
-
-    try:
-        async with aiosqlite.connect("restaurant_orders.db") as db:
-            async with db.execute("""
-                SELECT COUNT(*), SUM(total_price) 
-                FROM orders 
-                WHERE DATE(timestamp) = ?
-            """, (yesterday.isoformat(),)) as cursor:
-                result = await cursor.fetchone()
-
-        count = result[0] or 0
-        total = result[1] or 0
-
-        await update.message.reply_text(
-            f"📅 *إحصائيات يوم أمس:*\n\n"
-            f"🔢 عدد الطلبات: {count}\n"
-            f"💰 الدخل الكلي: {total} ل.س",
-            parse_mode="Markdown"
-        )
-    except Exception as e:
-        logger.error(f"❌ فشل استخراج إحصائيات أمس: {e}")
-
-
-async def handle_current_month_stats(update: Update, context: CallbackContext):
-    today = datetime.datetime.now()
-    first_day = today.replace(day=1).date().isoformat()
-    last_day = today.date().isoformat()
-
-    try:
-        async with aiosqlite.connect("restaurant_orders.db") as db:
-            async with db.execute("""
-                SELECT COUNT(*), SUM(total_price)
-                FROM orders
-                WHERE DATE(timestamp) BETWEEN ? AND ?
-            """, (first_day, last_day)) as cursor:
-                result = await cursor.fetchone()
-
-        count = result[0] or 0
-        total = result[1] or 0
-
-        await update.message.reply_text(
-            f"🗓️ *إحصائيات الشهر الحالي:*\n\n"
-            f"🔢 عدد الطلبات: {count}\n"
-            f"💰 الدخل الكلي: {total} ل.س",
-            parse_mode="Markdown"
-        )
-    except Exception as e:
-        logger.error(f"❌ خطأ أثناء استخراج إحصائيات الشهر الحالي: {e}")
-
-async def handle_last_month_stats(update: Update, context: CallbackContext):
-    today = datetime.datetime.now()
-    first_day_this_month = today.replace(day=1)
-    last_day_last_month = first_day_this_month - datetime.timedelta(days=1)
-    first_day_last_month = last_day_last_month.replace(day=1)
-
-    start_date = first_day_last_month.date().isoformat()
-    end_date = last_day_last_month.date().isoformat()
-
-    try:
-        async with aiosqlite.connect("restaurant_orders.db") as db:
-            async with db.execute("""
-                SELECT COUNT(*), SUM(total_price)
-                FROM orders
-                WHERE DATE(timestamp) BETWEEN ? AND ?
-            """, (start_date, end_date)) as cursor:
-                result = await cursor.fetchone()
-
-        count = result[0] or 0
-        total = result[1] or 0
-
-        await update.message.reply_text(
-            f"📆 *إحصائيات الشهر الماضي:*\n\n"
-            f"🔢 عدد الطلبات: {count}\n"
-            f"💰 الدخل الكلي: {total} ل.س",
-            parse_mode="Markdown"
-        )
-    except Exception as e:
-        logger.error(f"❌ خطأ أثناء استخراج إحصائيات الشهر الماضي: {e}")
 
 async def handle_current_year_stats(update: Update, context: CallbackContext):
     today = datetime.datetime.now()
@@ -949,12 +977,13 @@ async def handle_current_year_stats(update: Update, context: CallbackContext):
     end_date = today.date().isoformat()
 
     try:
-        async with aiosqlite.connect("restaurant_orders.db") as db:
-            async with db.execute("""
-                SELECT COUNT(*), SUM(total_price)
-                FROM orders
-                WHERE DATE(timestamp) BETWEEN ? AND ?
-            """, (start_date, end_date)) as cursor:
+        async with get_db_connection() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute("""
+                    SELECT COUNT(*), SUM(total_price)
+                    FROM orders
+                    WHERE DATE(timestamp) BETWEEN %s AND %s
+                """, (start_date, end_date))
                 result = await cursor.fetchone()
 
         count = result[0] or 0
@@ -977,12 +1006,13 @@ async def handle_last_year_stats(update: Update, context: CallbackContext):
     end_date = f"{last_year}-12-31"
 
     try:
-        async with aiosqlite.connect("restaurant_orders.db") as db:
-            async with db.execute("""
-                SELECT COUNT(*), SUM(total_price)
-                FROM orders
-                WHERE DATE(timestamp) BETWEEN ? AND ?
-            """, (start_date, end_date)) as cursor:
+        async with get_db_connection() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute("""
+                    SELECT COUNT(*), SUM(total_price)
+                    FROM orders
+                    WHERE DATE(timestamp) BETWEEN %s AND %s
+                """, (start_date, end_date))
                 result = await cursor.fetchone()
 
         count = result[0] or 0
@@ -997,10 +1027,12 @@ async def handle_last_year_stats(update: Update, context: CallbackContext):
     except Exception as e:
         logger.error(f"❌ خطأ أثناء استخراج إحصائيات السنة الماضية: {e}")
 
+
 async def handle_total_stats(update: Update, context: CallbackContext):
     try:
-        async with aiosqlite.connect("restaurant_orders.db") as db:
-            async with db.execute("SELECT COUNT(*), SUM(total_price) FROM orders") as cursor:
+        async with get_db_connection() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute("SELECT COUNT(*), SUM(total_price) FROM orders")
                 result = await cursor.fetchone()
 
         count = result[0] or 0
@@ -1032,17 +1064,7 @@ async def error_handler(update: object, context: CallbackContext) -> None:
 
 # ✅ **إعداد البوت وتشغيله**
 async def run_bot():
-    # ✅ تحميل إعدادات المطعم من ملف JSON
-    config = load_config()
-
-    global TOKEN, CASHIER_CHAT_ID, CHANNEL_ID, RESTAURANT_COMPLAINTS_CHAT_ID
-    TOKEN = config["token"]
-    CASHIER_CHAT_ID = int(config["cashier_id"])
-    CHANNEL_ID = int(config["channel_id"])
-    RESTAURANT_COMPLAINTS_CHAT_ID = int(config.get("complaints_channel_id", CHANNEL_ID))  # fallback
-
-    # ✅ بناء التطبيق بالتوكن المحمّل
-    app = Application.builder().token(TOKEN).build()
+    app = Application.builder().token("7114672578:AAEz5UZMD2igBFRhJrs9Rb1YCS4fkku-Jjc").build()
 
     # ✅ إنشاء قاعدة البيانات
     await initialize_database()
@@ -1050,20 +1072,26 @@ async def run_bot():
     # ✅ أوامر البوت
     app.add_handler(CommandHandler("start", start))
 
+    # ✅ إشعار تقييم الطلب من الزبون
     app.add_handler(MessageHandler(
         filters.ChatType.CHANNEL & filters.Regex(r"^✅ الزبون استلم طلبه رقم \d+ وقام بتقييمه بـ .+?\n📌 معرف الطلب: "), 
         handle_order_delivered_rating
     ))
 
+    # ✅ معالجة الأخطاء
     app.add_error_handler(error_handler)
 
+    # ✅ إشعارات الإلغاء
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.Regex("تردد الزبون"), handle_standard_cancellation_notice))
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.Regex("تأخر المطعم.*تم إنشاء تقرير"), handle_report_cancellation_notice))
+
+    # ✅ رسائل التذكير
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.Regex(r"تذكير من الزبون"), handle_channel_reminder))
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.Regex(r"كم يتبقى.*الطلب رقم"), handle_time_left_question))
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.LOCATION, handle_channel_location))
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.TEXT, handle_channel_order))
 
+    # ✅ أزرار التفاعل
     app.add_handler(CallbackQueryHandler(button, pattern=r"^(accept|reject|confirmreject|back|complain|report_(delivery|phone|location|other))_.+"))
     app.add_handler(CallbackQueryHandler(handle_time_selection, pattern=r"^time_\d+_.+"))
 
@@ -1073,6 +1101,7 @@ async def run_bot():
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex("❌ حذف دليفري"), handle_delete_delivery_menu))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_delete_delivery_choice))
 
+    # ✅ أوامر الإحصائيات
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex("📊 عدد الطلبات اليوم والدخل"), handle_today_stats))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex("📅 عدد الطلبات أمس والدخل"), handle_yesterday_stats))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex("🗓️ طلبات الشهر الحالي"), handle_current_month_stats))

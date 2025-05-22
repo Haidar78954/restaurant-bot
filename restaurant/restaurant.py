@@ -202,24 +202,31 @@ async def update_order_status(order_id, status):
 
 
 
-# ✅ دالة start — لا تعديل كبير هنا
-async def start(update: Update, context: CallbackContext):
+
+
+main_menu_keyboard = ReplyKeyboardMarkup(
+    [
+        ["🚚 الدليفري"],
+        ["📊 عدد الطلبات اليوم والدخل", "📅 عدد الطلبات أمس والدخل"],
+        ["🗓️ طلبات الشهر الحالي", "📆 طلبات الشهر الماضي"],
+        ["📈 طلبات السنة الحالية", "📉 طلبات السنة الماضية"],
+        ["📋 إجمالي الطلبات والدخل"]
+    ],
+    resize_keyboard=True
+)
+
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await update.message.reply_text(
-            "✅ بوت المطعم جاهز لاستقبال الطلبات من الزبائن!",
-            reply_markup=get_admin_main_menu()
+            "✅ بوت المطعم جاهز لاستقبال الطلبات !",
+            reply_markup=main_menu_keyboard
         )
     except Exception as e:
         logger.error(f"❌ خطأ في دالة start: {e}")
 
 
-main_menu_keyboard = ReplyKeyboardMarkup(
-    [
-        ["📦 الطلبات الحالية", "🚚 الدليفري"],
-        ["🔁 تحديث", "❌ خروج"]
-    ],
-    resize_keyboard=True
-)
 
 
 # ✅ استقبال طلب من القناة
@@ -836,7 +843,7 @@ async def handle_standard_cancellation_notice(update: Update, context: CallbackC
 async def handle_delivery_menu(update: Update, context: CallbackContext):
     reply_keyboard = [["➕ إضافة دليفري", "❌ حذف دليفري"], ["🔙 رجوع"]]
     await update.message.reply_text(
-        "📦 إدارة الدليفري:\nاختر الإجراء المطلوب:",
+        "📦 إدارة :\nاختر الإجراء المطلوب:",
         reply_markup=ReplyKeyboardMarkup(reply_keyboard, resize_keyboard=True)
     )
     context.user_data["delivery_action"] = "menu"

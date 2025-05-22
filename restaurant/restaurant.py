@@ -11,6 +11,8 @@ from telegram.error import TelegramError
 from telegram import ReplyKeyboardMarkup, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, CallbackContext
 from contextlib import asynccontextmanager
+from telegram.ext import ContextTypes
+
 
 # ✅ مسار قاعدة البيانات
 DB_PATH = "restaurant_orders.db"

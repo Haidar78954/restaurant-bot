@@ -1,8 +1,6 @@
 import sys
 import json
 import logging
-
-
 import re
 import os
 import traceback
@@ -16,6 +14,7 @@ from telegram import ReplyKeyboardMarkup, Update, InlineKeyboardButton, InlineKe
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, CallbackContext
 from contextlib import asynccontextmanager
 from telegram.ext import ContextTypes
+from telegram.request import HTTPXRequest
 
 
 # ✅ مسار قاعدة البيانات
@@ -1194,7 +1193,8 @@ async def error_handler(update: object, context: CallbackContext) -> None:
 # ✅ **إعداد البوت وتشغيله**
 async def run_bot():
     global app
-    app = Application.builder().token(TOKEN).concurrent_updates(True).build()
+    request = HTTPXRequest()  # ← جلسة منفصلة لكل بوت
+    app = Application.builder().token(TOKEN).request(request).concurrent_updates(True).build()
 
     # ✅ إنشاء قاعدة البيانات
     await initialize_database()

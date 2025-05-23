@@ -1193,7 +1193,8 @@ async def error_handler(update: object, context: CallbackContext) -> None:
 
 # ✅ **إعداد البوت وتشغيله**
 async def run_bot():
-    
+    global app
+    app = Application.builder().token(TOKEN).build()
 
     # ✅ إنشاء قاعدة البيانات
     await initialize_database()

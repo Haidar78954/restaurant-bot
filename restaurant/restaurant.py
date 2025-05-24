@@ -1,5 +1,5 @@
 import sys
-import json
+import json 
 import logging
 import re
 import os
@@ -15,6 +15,76 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 from contextlib import asynccontextmanager
 from telegram.ext import ContextTypes
 from telegram.request import HTTPXRequest
+from collections import deque
+
+
+
+# قفل التزامن للطلبات
+order_locks = {}
+
+async def get_order_lock(order_id):
+    """الحصول على قفل خاص بطلب معين"""
+    if order_id not in order_locks:
+        order_locks[order_id] = asyncio.Lock()
+    return order_locks[order_id]
+
+
+
+
+
+# محدد معدل الطلبات
+class RateLimiter:
+    def __init__(self, max_calls, period):
+        self.max_calls = max_calls
+        self.period = period
+        self.calls = deque()
+
+    async def acquire(self):
+        now = time.time()
+
+        # إزالة الطلبات القديمة
+        while self.calls and self.calls[0] < now - self.period:
+            self.calls.popleft()
+
+        # إذا وصلنا للحد الأقصى، انتظر
+        if len(self.calls) >= self.max_calls:
+            wait_time = self.calls[0] + self.period - now
+            await asyncio.sleep(wait_time)
+
+        # تسجيل الطلب الجديد
+        self.calls.append(time.time())
+
+# إنشاء محدد معدل للطلبات
+telegram_limiter = RateLimiter(max_calls=30, period=1)  # 30 طلب في الثانية
+
+# دالة لإرسال رسالة مع إعادة المحاولة
+async def send_message_with_retry(bot, chat_id, text, order_id=None, max_retries=5, **kwargs):
+    message_id = str(uuid.uuid4())  # إنشاء معرف فريد للرسالة
+    
+    # محاولة إرسال الرسالة مع إعادة المحاولة
+    for attempt in range(max_retries):
+        try:
+            # تطبيق محدد معدل الطلبات
+            await telegram_limiter.acquire()
+            
+            # إرسال الرسالة
+            sent_message = await bot.send_message(chat_id=chat_id, text=text, **kwargs)
+            
+            # إرجاع الرسالة المرسلة
+            return sent_message
+            
+        except Exception as e:
+            logger.error(f"فشل في إرسال الرسالة (المحاولة {attempt+1}/{max_retries}): {e}")
+            
+            # انتظار قبل إعادة المحاولة (زيادة وقت الانتظار مع كل محاولة)
+            wait_time = 0.5 * (2 ** attempt)  # 0.5, 1, 2, 4, 8 ثواني
+            await asyncio.sleep(wait_time)
+    
+    # رفع استثناء بعد فشل جميع المحاولات
+    raise Exception(f"فشلت جميع المحاولات ({max_retries}) لإرسال الرسالة.")
+
+
+
 
 
 # ✅ مسار قاعدة البيانات
@@ -218,6 +288,131 @@ async def update_order_status(order_id, status):
         logger.error(f"خطأ في تحديث حالة الطلب: {e}")
         return False
 
+#_______________________
+
+# دوال إنشاء الرسائل الموحدة
+def create_order_accepted_message(order_id, order_number, delivery_time, notes=None):
+    """إنشاء رسالة تأكيد استلام الطلب بالتنسيق الموحد"""
+    
+    message = (
+        f"✅ *تم قبول الطلب*\n\n"
+        f"🔢 *رقم الطلب:* `{order_number}`\n"
+        f"🆔 *معرف الطلب:* `{order_id}`\n\n"
+        f"⏱️ *وقت التوصيل المتوقع:* {delivery_time} دقيقة\n"
+    )
+    
+    if notes:
+        message += f"\n📋 *ملاحظات:* {notes}"
+    
+    return message
+
+def create_order_rejected_message(order_id, order_number, reason=None):
+    """إنشاء رسالة رفض الطلب بالتنسيق الموحد"""
+    
+    message = (
+        f"🚫 *تم رفض الطلب*\n\n"
+        f"🔢 *رقم الطلب:* `{order_number}`\n"
+        f"🆔 *معرف الطلب:* `{order_id}`\n\n"
+    )
+    
+    if reason:
+        message += f"📋 *سبب الرفض:* {reason}\n"
+    else:
+        message += f"📋 *سبب الرفض:* قد تكون معلومات المستخدم غير مكتملة أو غير واضحة.\n"
+    
+    message += "\nيمكنك اختيار *تعديل معلوماتي* لتصحيحها أو المحاولة لاحقاً."
+    
+    return message
+
+def create_rating_response_message(order_id, order_number, rating, comment=None):
+    """إنشاء رسالة تقييم للكاشير بالتنسيق الموحد"""
+    
+    stars = "⭐" * rating
+    
+    message = (
+        f"📊 *تقييم جديد*\n\n"
+        f"🔢 *رقم الطلب:* `{order_number}`\n"
+        f"🆔 *معرف الطلب:* `{order_id}`\n\n"
+        f"⭐ *التقييم:* {stars} ({rating}/5)\n"
+    )
+    
+    if comment:
+        message += f"💬 *التعليق:* {comment}\n"
+    
+    return message
+
+
+# دوال استخراج المعلومات من الرسائل
+def extract_order_id(text):
+    """استخراج معرف الطلب من النص"""
+    # محاولة استخراج معرف الطلب بالتنسيق الجديد
+    match = re.search(r"🆔 \*معرف الطلب:\* `([^`]+)`", text)
+    if match:
+        return match.group(1)
+    
+    # محاولة استخراج معرف الطلب بالتنسيق القديم
+    match = re.search(r"معرف الطلب:\s*[`\"']?([\w\d]+)[`\"']?", text)
+    if match:
+        return match.group(1)
+    
+    return None
+
+def extract_order_number(text):
+    """استخراج رقم الطلب من النص"""
+    # محاولة استخراج رقم الطلب بالتنسيق الجديد
+    match = re.search(r"🔢 \*رقم الطلب:\* `(\d+)`", text)
+    if match:
+        return int(match.group(1))
+    
+    # محاولة استخراج رقم الطلب بالتنسيق القديم
+    match = re.search(r"رقم الطلب:?\s*[`\"']?(\d+)[`\"']?", text)
+    if match:
+        return int(match.group(1))
+    
+    # محاولة استخراج رقم الطلب من نص آخر
+    match = re.search(r"طلبه رقم (\d+)", text)
+    if match:
+        return int(match.group(1))
+    
+    return None
+
+def extract_rating(text):
+    """استخراج التقييم من النص"""
+    # محاولة استخراج التقييم بالتنسيق الجديد
+    match = re.search(r"⭐ \*التقييم:\* (⭐+) \((\d+)/5\)", text)
+    if match:
+        return int(match.group(2))
+    
+    # محاولة استخراج التقييم بالتنسيق القديم
+    match = re.search(r"تقييمه بـ (\⭐+)", text)
+    if match:
+        return len(match.group(1))
+    
+    return 0
+
+def extract_comment(text):
+    """استخراج التعليق من النص"""
+    # محاولة استخراج التعليق بالتنسيق الجديد
+    match = re.search(r"💬 \*التعليق:\* (.+?)(?:\n|$)", text)
+    if match:
+        return match.group(1).strip()
+    
+    # محاولة استخراج التعليق بالتنسيق القديم
+    match = re.search(r"💬 التعليق: (.+?)(?:\n|$)", text)
+    if match:
+        return match.group(1).strip()
+    
+    return None
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -245,8 +440,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"❌ خطأ في دالة start: {e}")
 
 
-
-
 # ✅ استقبال طلب من القناة
 async def handle_channel_order(update: Update, context: CallbackContext):
     message = update.channel_post
@@ -256,62 +449,75 @@ async def handle_channel_order(update: Update, context: CallbackContext):
 
     text = message.text or ""
 
+    # تجاهل رسائل التقييم أو الإلغاء
     if "استلم طلبه رقم" in text and "قام بتقييمه بـ" in text:
         logger.info("ℹ️ تم تجاهل رسالة التقييم، ليست طلبًا جديدًا.")
         return
 
-    if text.startswith("🚫 تم إلغاء الطلب رقم"):
+    if text.startswith("🚫 تم إلغاء الطلب رقم") or "تم إلغاء الطلب" in text:
         logger.info("⛔️ تم تجاهل رسالة إلغاء الطلب (ليست طلبًا جديدًا).")
         return
 
     logger.info(f"📥 استلم البوت طلبًا جديدًا من القناة: {text}")
 
-    match = re.search(r"معرف الطلب:\s*([\w\d]+)", text)
-    if not match:
+    # استخراج المعرف ورقم الطلب بالتنسيق الموحد أو القديم
+    order_id = extract_order_id(text)
+    order_number = extract_order_number(text)
+
+    if not order_id:
         logger.warning("⚠️ لم يتم العثور على معرف الطلب في الرسالة!")
         return
 
-    order_id = match.group(1)
-    logger.info(f"🔍 تم استخراج معرف الطلب: {order_id}")
+    logger.info(f"🔍 تم استخراج معرف الطلب: {order_id} | رقم الطلب: {order_number or 'غير معروف'}")
 
-    location = pending_locations.pop("last_location", None)
-    message_text = text + ("\n\n📍 *تم إرفاق الموقع الجغرافي*" if location else "")
+    # 🔐 الحصول على قفل تزامن خاص بهذا الطلب
+    lock = await get_order_lock(order_id)
 
-    keyboard = [
-        [InlineKeyboardButton("✅ قبول الطلب", callback_data=f"accept_{order_id}")],
-        [InlineKeyboardButton("❌ رفض الطلب", callback_data=f"reject_{order_id}")],
-        [InlineKeyboardButton("🚨 شكوى عن الزبون أو الطلب", callback_data=f"complain_{order_id}")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    # 🔒 منع التداخل عند معالجة الطلب نفسه
+    async with lock:
+        location = pending_locations.pop("last_location", None)
+        message_text = text + ("\n\n📍 *تم إرفاق الموقع الجغرافي*" if location else "")
 
-    try:
-        sent_message = await context.bot.send_message(
-            chat_id=CASHIER_CHAT_ID,
-            text=f"🆕 *طلب جديد من القناة:*\n\n{message_text}\n\n📌 معرف الطلب: `{order_id}`",
-            parse_mode="Markdown",
-            reply_markup=reply_markup
-        )
-        logger.info(f"✅ تم إرسال الطلب إلى الكاشير (order_id={order_id})")
+        keyboard = [
+            [InlineKeyboardButton("✅ قبول الطلب", callback_data=f"accept_{order_id}")],
+            [InlineKeyboardButton("❌ رفض الطلب", callback_data=f"reject_{order_id}")],
+            [InlineKeyboardButton("🚨 شكوى عن الزبون أو الطلب", callback_data=f"complain_{order_id}")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
 
-        pending_orders[order_id] = {
-            "order_details": message_text,
-            "channel_message_id": message.message_id,
-            "message_id": sent_message.message_id
-        }
+        try:
+            sent_message = await send_message_with_retry(
+                context.bot,
+                chat_id=CASHIER_CHAT_ID,
+                text=f"🆕 *طلب جديد من القناة:*\n\n{message_text}\n\n📌 *معرف الطلب:* `{order_id}`",
+                parse_mode="Markdown",
+                reply_markup=reply_markup
+            )
+            logger.info(f"✅ تم إرسال الطلب إلى الكاشير (order_id={order_id})")
 
-        if location:
-            try:
-                latitude, longitude = location
-                await context.bot.send_location(chat_id=CASHIER_CHAT_ID, latitude=latitude, longitude=longitude)
-                logger.info(f"✅ تم إرسال الموقع للكاشير (order_id={order_id})")
-            except Exception as e:
-                logger.error(f"❌ فشل إرسال الموقع: {e}")
+            pending_orders[order_id] = {
+                "order_details": message_text,
+                "channel_message_id": message.message_id,
+                "message_id": sent_message.message_id
+            }
 
-    except Exception as e:
-        logger.error(f"❌ خطأ أثناء إرسال الطلب إلى الكاشير: {e}")
+            if location:
+                try:
+                    latitude, longitude = location
+                    await context.bot.send_location(
+                        chat_id=CASHIER_CHAT_ID,
+                        latitude=latitude,
+                        longitude=longitude
+                    )
+                    logger.info(f"✅ تم إرسال الموقع للكاشير (order_id={order_id})")
+                except Exception as e:
+                    logger.error(f"❌ فشل إرسال الموقع: {e}")
+
+        except Exception as e:
+            logger.error(f"❌ خطأ أثناء إرسال الطلب إلى الكاشير: {e}")
 
 
-# ✅ استقبال الموقع الجغرافي بعد الطلب
+
 async def handle_channel_location(update: Update, context: CallbackContext):
     message = update.channel_post
     if not message or message.chat_id != CHANNEL_ID:
@@ -342,12 +548,7 @@ async def handle_channel_location(update: Update, context: CallbackContext):
 
     try:
         await context.bot.send_location(chat_id=CASHIER_CHAT_ID, latitude=latitude, longitude=longitude)
-        logger.info(f"✅ أُرسل الموقع مجددًا للكاشير (order_id={last_order_id})")
-    except Exception as e:
-        logger.error(f"❌ خطأ أثناء إعادة إرسال الموقع: {e}")
-
-    try:
-        await context.bot.send_message(
+        await send_message_with_retry(context.bot, 
             chat_id=CASHIER_CHAT_ID,
             text=f"🆕 *طلب جديد محدث من القناة:*\n\n{updated_order_text}\n\n📌 معرف الطلب: `{last_order_id}`",
             parse_mode="Markdown",
@@ -356,7 +557,6 @@ async def handle_channel_location(update: Update, context: CallbackContext):
         logger.info(f"✅ تم إرسال الطلب المحدث مع الموقع (order_id={last_order_id})")
     except Exception as e:
         logger.error(f"❌ خطأ أثناء إرسال الطلب المحدث: {e}")
-
 
 
 
@@ -383,147 +583,134 @@ async def button(update: Update, context: CallbackContext):
         await query.answer("⚠️ هذا الطلب لم يعد متاحًا.", show_alert=True)
         return
 
-    order_info = pending_orders[order_id]
-    message_id = order_info.get("message_id")
-    order_details = order_info.get("order_details", "")
+    # 🔐 الحصول على قفل خاص بهذا الطلب
+    lock = await get_order_lock(order_id)
 
-    # ✅ قبول الطلب: عرض أزرار الوقت
-    if action == "accept":
-        keyboard = [
-            [InlineKeyboardButton(f"{t} دقيقة", callback_data=f"time_{t}_{order_id}")]
-            for t in [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 60, 75, 90]
-        ]
-        keyboard.append([InlineKeyboardButton("📌 أكثر من 90 دقيقة", callback_data=f"time_90+_{order_id}")])
-        keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data=f"back_{order_id}")])
+    # 🔒 منع التداخل عند معالجة نفس الطلب
+    async with lock:
+        order_info = pending_orders[order_id]
+        message_id = order_info.get("message_id")
+        order_details = order_info.get("order_details", "")
 
-        try:
-            await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(keyboard))
-        except TelegramError as e:
-            logger.error(f"❌ فشل في تعديل الأزرار (accept): {e}")
-        return
+        if action == "accept":
+            keyboard = [
+                [InlineKeyboardButton(f"{t} دقيقة", callback_data=f"time_{t}_{order_id}")]
+                for t in [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 60, 75, 90]
+            ]
+            keyboard.append([InlineKeyboardButton("📌 أكثر من 90 دقيقة", callback_data=f"time_90+_{order_id}")])
+            keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data=f"back_{order_id}")])
 
-    # ✅ رفض الطلب: عرض تأكيد
-    elif action == "reject":
-        try:
-            await query.edit_message_reply_markup(
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("✅ تأكيد رفض الطلب", callback_data=f"confirmreject_{order_id}")],
-                    [InlineKeyboardButton("🔙 رجوع", callback_data=f"back_{order_id}")]
-                ])
-            )
-        except TelegramError as e:
-            logger.error(f"❌ فشل في عرض أزرار الرفض: {e}")
+            try:
+                await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(keyboard))
+            except TelegramError as e:
+                logger.error(f"❌ فشل في تعديل الأزرار (accept): {e}")
+            return
 
-    # ✅ تأكيد الرفض النهائي
-    elif action == "confirmreject":
-        try:
-            await context.bot.edit_message_reply_markup(
-                chat_id=CASHIER_CHAT_ID,
-                message_id=message_id,
-                reply_markup=None
-            )
+        elif action == "confirmreject":
+            try:
+                await context.bot.edit_message_reply_markup(
+                    chat_id=CASHIER_CHAT_ID,
+                    message_id=message_id,
+                    reply_markup=None
+                )
 
-            await context.bot.send_message(
-                chat_id=CHANNEL_ID,
-                text=(
-                    f"🚫 تم رفض الطلب.\n"
-                    f"📌 معرف الطلب: `{order_id}`\n"
-                    "📍 السبب: قد تكون معلومات المستخدم غير مكتملة أو غير واضحة.\n"
-                    "يمكنك اختيار *تعديل معلوماتي* لتصحيحها.\n"
-                    "أو ربما منطقتك لا تغطيها خدمة التوصيل.\n"
-                    "جرب اختيار مطعم أقرب أو المحاولة لاحقًا إن كانت هناك مشكلة لدى المطعم."
-                ),
-                parse_mode="Markdown"
-            )
+                reject_message = create_order_rejected_message(
+                    order_id=order_id,
+                    order_number=extract_order_number(order_details),
+                    reason="قد تكون معلومات المستخدم غير مكتملة أو غير واضحة."
+                )
 
-            logger.info(f"✅ تم رفض الطلب وإبلاغ المستخدم. (order_id={order_id})")
+                await send_message_with_retry(
+                    context.bot,
+                    chat_id=CHANNEL_ID,
+                    text=reject_message,
+                    parse_mode="Markdown"
+                )
 
-        except TelegramError as e:
-            logger.error(f"❌ فشل في إرسال إشعار رفض الطلب: {e}")
-        finally:
-            pending_orders.pop(order_id, None)  # 🧹 تنظيف الطلب
+                logger.info(f"✅ تم رفض الطلب وإبلاغ المستخدم. (order_id={order_id})")
+            except TelegramError as e:
+                logger.error(f"❌ فشل في إرسال إشعار رفض الطلب: {e}")
+            finally:
+                pending_orders.pop(order_id, None)
 
-    # ✅ زر الرجوع
-    elif action == "back":
-        try:
-            await query.edit_message_reply_markup(
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("✅ قبول الطلب", callback_data=f"accept_{order_id}")],
-                    [InlineKeyboardButton("❌ رفض الطلب", callback_data=f"reject_{order_id}")],
-                    [InlineKeyboardButton("🚨 شكوى عن الزبون أو الطلب", callback_data=f"complain_{order_id}")]
-                ])
-            )
-        except TelegramError as e:
-            logger.error(f"❌ فشل في عرض أزرار الرجوع: {e}")
+        elif action == "back":
+            try:
+                await query.edit_message_reply_markup(
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("✅ قبول الطلب", callback_data=f"accept_{order_id}")],
+                        [InlineKeyboardButton("❌ رفض الطلب", callback_data=f"reject_{order_id}")],
+                        [InlineKeyboardButton("🚨 شكوى عن الزبون أو الطلب", callback_data=f"complain_{order_id}")]
+                    ])
+                )
+            except TelegramError as e:
+                logger.error(f"❌ فشل في عرض أزرار الرجوع: {e}")
 
-    # ✅ عرض قائمة الشكاوى
-    elif action == "complain":
-        try:
-            await query.edit_message_reply_markup(
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🚪 وصل الديليفري ولم يجد الزبون", callback_data=f"report_delivery_{order_id}")],
-                    [InlineKeyboardButton("📞 رقم الهاتف غير صحيح", callback_data=f"report_phone_{order_id}")],
-                    [InlineKeyboardButton("📍 معلومات الموقع غير دقيقة", callback_data=f"report_location_{order_id}")],
-                    [InlineKeyboardButton("❓ مشكلة أخرى", callback_data=f"report_other_{order_id}")],
-                    [InlineKeyboardButton("🔙 رجوع", callback_data=f"back_{order_id}")]
-                ])
-            )
-        except TelegramError as e:
-            logger.error(f"❌ فشل في عرض أزرار الشكاوى: {e}")
+        elif action == "complain":
+            try:
+                await query.edit_message_reply_markup(
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🚪 وصل الديليفري ولم يجد الزبون", callback_data=f"report_delivery_{order_id}")],
+                        [InlineKeyboardButton("📞 رقم الهاتف غير صحيح", callback_data=f"report_phone_{order_id}")],
+                        [InlineKeyboardButton("📍 معلومات الموقع غير دقيقة", callback_data=f"report_location_{order_id}")],
+                        [InlineKeyboardButton("❓ مشكلة أخرى", callback_data=f"report_other_{order_id}")],
+                        [InlineKeyboardButton("🔙 رجوع", callback_data=f"back_{order_id}")]
+                    ])
+                )
+            except TelegramError as e:
+                logger.error(f"❌ فشل في عرض أزرار الشكاوى: {e}")
 
-    # ✅ تنفيذ الشكوى الفعلية
-    elif report_type:
-        reason_map = {
-            "report_delivery": "🚪 وصل الديليفري ولم يجد الزبون",
-            "report_phone": "📞 رقم الهاتف غير صحيح",
-            "report_location": "📍 معلومات الموقع غير دقيقة",
-            "report_other": "❓ شكوى أخرى من الكاشير"
-        }
+        elif report_type:
+            reason_map = {
+                "report_delivery": "🚪 وصل الديليفري ولم يجد الزبون",
+                "report_phone": "📞 رقم الهاتف غير صحيح",
+                "report_location": "📍 معلومات الموقع غير دقيقة",
+                "report_other": "❓ شكوى أخرى من الكاشير"
+            }
 
-        reason_text = reason_map.get(report_type, "شكوى غير معروفة")
+            reason_text = reason_map.get(report_type, "شكوى غير معروفة")
 
-        try:
-            await context.bot.send_message(
-                chat_id=RESTAURANT_COMPLAINTS_CHAT_ID,
-                text=(
-                    f"📣 *شكوى من الكاشير على الطلب:*\n"
-                    f"📌 معرف الطلب: `{order_id}`\n"
-                    f"📍 السبب: {reason_text}\n\n"
-                    f"📝 *تفاصيل الطلب:*\n\n{order_details}"
-                ),
-                parse_mode="Markdown"
-            )
+            try:
+                await send_message_with_retry(
+                    context.bot,
+                    chat_id=RESTAURANT_COMPLAINTS_CHAT_ID,
+                    text=(
+                        f"📣 *شكوى من الكاشير على الطلب:*\n"
+                        f"📌 معرف الطلب: `{order_id}`\n"
+                        f"📍 السبب: {reason_text}\n\n"
+                        f"📝 *تفاصيل الطلب:*\n\n{order_details}"
+                    ),
+                    parse_mode="Markdown"
+                )
 
-            await context.bot.send_message(
-                chat_id=CHANNEL_ID,
-                text=(
-                    f"🚫 تم إلغاء الطلب بسبب شكوى الكاشير.\n"
-                    f"📌 معرف الطلب: `{order_id}`\n"
-                    f"📍 السبب: {reason_text}"
-                ),
-                parse_mode="Markdown"
-            )
+                await send_message_with_retry(
+                    context.bot,
+                    chat_id=CHANNEL_ID,
+                    text=(
+                        f"🚫 تم إلغاء الطلب بسبب شكوى الكاشير.\n"
+                        f"📌 معرف الطلب: `{order_id}`\n"
+                        f"📍 السبب: {reason_text}"
+                    ),
+                    parse_mode="Markdown"
+                )
 
-            await context.bot.edit_message_reply_markup(
-                chat_id=CASHIER_CHAT_ID,
-                message_id=message_id,
-                reply_markup=None
-            )
+                await context.bot.edit_message_reply_markup(
+                    chat_id=CASHIER_CHAT_ID,
+                    message_id=message_id,
+                    reply_markup=None
+                )
 
-            await context.bot.send_message(
-                chat_id=CASHIER_CHAT_ID,
-                text="📨 تم إرسال الشكوى وإلغاء الطلب. سيتواصل معكم فريق الدعم إذا لزم الأمر."
-            )
+                await send_message_with_retry(
+                    context.bot,
+                    chat_id=CASHIER_CHAT_ID,
+                    text="📨 تم إرسال الشكوى وإلغاء الطلب. سيتواصل معكم فريق الدعم إذا لزم الأمر."
+                )
 
-            logger.info(f"✅ تم إرسال شكوى بنجاح وتم تنظيف الطلب: {order_id}")
+                logger.info(f"✅ تم إرسال شكوى بنجاح وتم تنظيف الطلب: {order_id}")
 
-        except TelegramError as e:
-            logger.error(f"❌ خطأ أثناء إرسال الشكوى: {e}")
-        finally:
-            pending_orders.pop(order_id, None)  # 🧹 تنظيف الطلب
-
-
-
+            except TelegramError as e:
+                logger.error(f"❌ خطأ أثناء إرسال الشكوى: {e}")
+            finally:
+                pending_orders.pop(order_id, None)
 
 
 
@@ -531,73 +718,63 @@ async def handle_time_selection(update: Update, context: CallbackContext):
     query = update.callback_query
     await query.answer()
 
-    # استخراج الوقت ومعرف الطلب
     _, time_selected, order_id = query.data.split("_")
 
-    # تحديث الأزرار مع إضافة زر "🚗 جاهز ليطلع"
-    keyboard = [
-        [InlineKeyboardButton(f"✅ {t} دقيقة" if str(t) == time_selected else f"{t} دقيقة", callback_data=f"time_{t}_{order_id}")]
-        for t in [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 60, 75, 90]
-    ]
-    keyboard.append([InlineKeyboardButton("🚗 جاهز ليطلع", callback_data=f"ready_{order_id}")])
-    keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data=f"back_{order_id}")])
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    # 🔐 الحصول على قفل خاص بهذا الطلب
+    lock = await get_order_lock(order_id)
 
-    try:
-        await query.edit_message_reply_markup(reply_markup=reply_markup)
-    except Exception as e:
-        logger.warning(f"⚠️ لم يتم تحديث الأزرار: {e}")
+    # 🔒 استخدام القفل لمنع التداخل
+    async with lock:
+        # تحديث الأزرار
+        keyboard = [
+            [InlineKeyboardButton(f"✅ {t} دقيقة" if str(t) == time_selected else f"{t} دقيقة", callback_data=f"time_{t}_{order_id}")]
+            for t in [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 60, 75, 90]
+        ]
+        keyboard.append([InlineKeyboardButton("🚗 جاهز ليطلع", callback_data=f"ready_{order_id}")])
+        keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data=f"back_{order_id}")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
 
-    # التحقق من الطلب داخل الذاكرة
-    order_data = pending_orders.get(order_id)
-    if not order_data:
-        logger.warning(f"⚠️ الطلب غير موجود في pending_orders: {order_id}")
-        return
+        try:
+            await query.edit_message_reply_markup(reply_markup=reply_markup)
+        except Exception as e:
+            logger.warning(f"⚠️ لم يتم تحديث الأزرار: {e}")
 
-    order_text = order_data["order_details"]
+        order_data = pending_orders.get(order_id)
+        if not order_data:
+            logger.warning(f"⚠️ الطلب غير موجود في pending_orders: {order_id}")
+            return
 
-    # استخراج البيانات
-    order_number_match = re.search(r"رقم الطلب[:\s]*([0-9]+)", order_text)
-    order_number = int(order_number_match.group(1)) if order_number_match else 0
+        order_details = order_data["order_details"]
 
-    total_price_match = re.search(r"المجموع الكلي[:\s]*([0-9,]+)", order_text)
-    total_price = int(total_price_match.group(1).replace(",", "")) if total_price_match else 0
-
-    restaurant_match = re.search(r"المطعم[:\s]*(.+)", order_text)
-    restaurant = restaurant_match.group(1).strip() if restaurant_match else "غير معروف"
-
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    # ✅ تسجيل الطلب في قاعدة البيانات
-    try:
-        async with get_db_connection() as conn:
-            async with conn.cursor() as cursor:
-                await cursor.execute("""
-                    INSERT INTO orders (order_id, order_number, restaurant, total_price, timestamp)
-                    VALUES (%s, %s, %s, %s, %s)
-                """, (order_id, order_number, restaurant, total_price, timestamp))
-            await conn.commit()
-            logger.info(f"✅ تم تسجيل الطلب في قاعدة البيانات: {order_id}")
-    except Exception as e:
-        logger.error(f"❌ فشل تسجيل الطلب في قاعدة البيانات: {e}")
-
-
-    # ✅ إرسال إشعار للمستخدم في القناة
-    try:
-        await context.bot.send_message(
-            chat_id=CHANNEL_ID,
-            text=(
-                f"🔥 *الطلب عالنار بالمطبخ!* 🍽️\n\n"
-                f"📌 *معرف الطلب:* `{order_id}`\n"
-                f"⏳ *مدة التحضير:* {time_selected} دقيقة"
-            ),
-            parse_mode="Markdown"
+        # بناء الرسالة الموحدة للمستخدم
+        accept_message = create_order_accepted_message(
+            order_id=order_id,
+            order_number=extract_order_number(order_details),
+            delivery_time=time_selected
         )
-    except Exception as e:
-        logger.error(f"❌ فشل في إرسال إشعار القبول إلى القناة: {e}")
 
-    # ❌ لا نحذف الطلب من pending_orders الآن
-    # نحتاجه لاحقًا عند إسناده لدليفري باستخدام زر "🚗 جاهز ليطلع"
+        try:
+            await send_message_with_retry(
+                context.bot,
+                chat_id=CHANNEL_ID,
+                text=accept_message,
+                parse_mode="Markdown"
+            )
+
+            await send_message_with_retry(
+                context.bot,
+                chat_id=CASHIER_CHAT_ID,
+                text=f"✅ تم قبول الطلب وإبلاغ المستخدم بوقت التوصيل: {time_selected} دقيقة."
+            )
+
+            logger.info(f"✅ تم قبول الطلب وإبلاغ المستخدم. (order_id={order_id}, time={time_selected})")
+
+        except Exception as e:
+            logger.error(f"❌ فشل في إرسال إشعار القبول: {e}")
+        finally:
+            pending_orders.pop(order_id, None)
+
+
 
 
 
@@ -610,7 +787,7 @@ async def handle_channel_reminder(update: Update, context: CallbackContext):
     if "تذكير من الزبون" in message.text:
         logger.info(f"📥 استلم البوت تذكيرًا جديدًا: {message.text}")
         try:
-            await context.bot.send_message(
+            await send_message_with_retry(context.bot, 
                 chat_id=CASHIER_CHAT_ID,
                 text=f"🔔 *تذكير من الزبون!*\n\n{message.text}",
                 parse_mode="Markdown"
@@ -629,7 +806,7 @@ async def handle_reminder_message(update: Update, context: CallbackContext):
     if "تذكير من الزبون" in message.text:
         logger.info("📌 تم استلام تذكير من الزبون، إعادة توجيهه للكاشير...")
         try:
-            await context.bot.send_message(
+            await send_message_with_retry(context.bot, 
                 chat_id=CASHIER_CHAT_ID,
                 text=message.text
             )
@@ -647,7 +824,7 @@ async def handle_time_left_question(update: Update, context: CallbackContext):
     if "كم يتبقى" in message.text and "الطلب رقم" in message.text:
         logger.info("📥 تم استلام استفسار عن المدة المتبقية للطلب...")
         try:
-            await context.bot.send_message(
+            await send_message_with_retry(context.bot, 
                 chat_id=CASHIER_CHAT_ID,
                 text=f"⏳ *استفسار من الزبون:*\n\n{message.text}",
                 parse_mode="Markdown"
@@ -741,7 +918,7 @@ async def handle_order_delivered_rating(update: Update, context: CallbackContext
 
         stars = extract_stars(text)
 
-        await context.bot.send_message(
+        await send_message_with_retry(context.bot, 
             chat_id=CASHIER_CHAT_ID,
             text=f"✅ الزبون استلم طلبه رقم {order_number} وقام بتقييمه بـ {stars}"
         )
@@ -789,7 +966,7 @@ async def handle_report_cancellation_notice(update: Update, context: CallbackCon
         )
         logger.info(f"✅ تم إزالة أزرار الطلب رقم {order_number} (معرف: {order_id})")
 
-        await context.bot.send_message(
+        await send_message_with_retry(context.bot, 
             chat_id=CASHIER_CHAT_ID,
             text=(
                 f"🚫 تم إلغاء الطلب رقم {order_number} من قبل الزبون.\n"
@@ -842,7 +1019,7 @@ async def handle_standard_cancellation_notice(update: Update, context: CallbackC
         )
         logger.info(f"✅ تم إزالة أزرار الطلب رقم {order_number} (معرف: {order_id})")
 
-        await context.bot.send_message(
+        await send_message_with_retry(context.bot, 
             chat_id=CASHIER_CHAT_ID,
             text=(
                 f"🚫 تم إلغاء الطلب رقم {order_number} من قبل الزبون.\n"
@@ -979,6 +1156,54 @@ async def handle_delete_delivery_choice(update: Update, context: CallbackContext
     except Exception as e:
         logger.error(f"❌ خطأ أثناء حذف الدليفري: {e}")
         await update.message.reply_text("⚠️ حدث خطأ أثناء حذف الدليفري.")
+
+
+
+
+
+async def handle_rating_message(update: Update, context: CallbackContext):
+    message = update.channel_post
+    
+    if not message or message.chat_id != CHANNEL_ID:
+        return
+    
+    text = message.text or ""
+    
+    # التحقق من أن الرسالة هي رسالة تقييم
+    if "قام بتقييمه بـ" not in text:
+        return
+    
+    # استخراج معلومات التقييم
+    order_id = extract_order_id(text)
+    order_number = extract_order_number(text)
+    rating = extract_rating(text)
+    comment = extract_comment(text)
+    
+    if not order_id:
+        logger.warning("⚠️ لم يتم العثور على معرف الطلب في رسالة التقييم!")
+        return
+    
+    # إنشاء رسالة التقييم للكاشير
+    cashier_message = create_rating_response_message(
+        order_id=order_id,
+        order_number=order_number,
+        rating=rating,
+        comment=comment
+    )
+    
+    # إرسال التقييم إلى الكاشير
+    try:
+        await send_message_with_retry(context.bot, 
+            chat_id=CASHIER_CHAT_ID,
+            text=cashier_message,
+            parse_mode="Markdown"
+        )
+        logger.info(f"✅ تم إرسال التقييم إلى الكاشير (order_id={order_id})")
+    except Exception as e:
+        logger.error(f"❌ فشل في إرسال التقييم إلى الكاشير: {e}")
+
+
+
 
 
 async def handle_yesterday_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1239,6 +1464,7 @@ async def run_bot():
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex("📈 طلبات السنة الحالية"), handle_current_year_stats))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex("📉 طلبات السنة الماضية"), handle_last_year_stats))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex("📋 إجمالي الطلبات والدخل"), handle_total_stats))
+    application.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.TEXT & filters.Regex("قام بتقييمه بـ"), handle_rating_message))
 
     # ✅ تشغيل البوت
     await app.run_polling()

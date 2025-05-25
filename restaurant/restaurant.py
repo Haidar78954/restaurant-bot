@@ -20,6 +20,28 @@ from telegram.error import NetworkError
 
 
 
+
+async def track_sent_message(message_id, order_id, source, destination, content):
+    """تتبع الرسائل المرسلة في قاعدة البيانات"""
+    try:
+        async with get_db_connection() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    INSERT INTO message_tracking 
+                    (message_id, order_id, source, destination, content, sent_time) 
+                    VALUES (%s, %s, %s, %s, %s, NOW())
+                    """,
+                    (message_id, order_id, source, destination, content)
+                )
+            await conn.commit()
+        return True
+    except Exception as e:
+        logger.error(f"خطأ في تتبع الرسالة: {e}")
+        return False
+
+
+
 # قفل التزامن للطلبات
 order_locks = {}
 order_queue = asyncio.Queue()
@@ -538,22 +560,22 @@ async def handle_channel_order(update: Update, context: CallbackContext):
     if not message or message.chat_id != CHANNEL_ID:
         return
 
-    original_text = message.text or ""
+    text = message.text or ""
 
     # تجاهل رسائل التقييم أو الإلغاء
-    if "استلم طلبه رقم" in original_text and "قام بتقييمه بـ" in original_text:
+    if "استلم طلبه رقم" in text and "قام بتقييمه بـ" in text:
         logger.info("ℹ️ تم تجاهل رسالة التقييم، ليست طلبًا جديدًا.")
         return
 
-    if original_text.startswith("🚫 تم إلغاء الطلب رقم") or "تم إلغاء الطلب" in original_text:
+    if text.startswith("🚫 تم إلغاء الطلب رقم") or "تم إلغاء الطلب" in text:
         logger.info("⛔️ تم تجاهل رسالة إلغاء الطلب (ليست طلبًا جديدًا).")
         return
 
-    logger.info(f"📥 استلم البوت طلبًا جديدًا من القناة: {original_text}")
+    logger.info(f"📥 استلم البوت طلبًا جديدًا من القناة: {text}")
 
     # استخراج المعرف ورقم الطلب
-    order_id = extract_order_id(original_text)
-    order_number = extract_order_number(original_text)
+    order_id = extract_order_id(text)
+    order_number = extract_order_number(text)
 
     if not order_id:
         logger.warning("⚠️ لم يتم العثور على معرف الطلب في الرسالة!")
@@ -564,9 +586,10 @@ async def handle_channel_order(update: Update, context: CallbackContext):
     # 🔐 الحصول على قفل تزامن خاص بهذا الطلب
     lock = await get_order_lock(order_id)
 
+    # 🔒 منع التداخل عند معالجة الطلب نفسه
     async with lock:
         location = pending_locations.pop("last_location", None)
-        message_text = original_text + ("\n\n📍 *تم إرفاق الموقع الجغرافي*" if location else "")
+        message_text = text + ("\n\n📍 *تم إرفاق الموقع الجغرافي*" if location else "")
 
         keyboard = [
             [InlineKeyboardButton("✅ قبول الطلب", callback_data=f"accept_{order_id}")],
@@ -576,22 +599,26 @@ async def handle_channel_order(update: Update, context: CallbackContext):
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         try:
-            # 🔢 إعداد محتوى الرسالة الموحدة
-            full_text = f"🆕 *طلب جديد من القناة:*\n\n{message_text}\n\n📌 *معرف الطلب:* `{order_id}`"
+            # 1. بناء النص
+            text_to_send = f"🆕 *طلب جديد من القناة:*\n\n{message_text}\n\n📌 *معرف الطلب:* `{order_id}`"
 
+            # 2. إنشاء معرف تتبع
             message_id = str(uuid.uuid4())
+
+            # 3. تتبع الرسالة
             await track_sent_message(
                 message_id=message_id,
                 order_id=order_id,
                 source="restaurant_bot",
                 destination="cashier",
-                content=full_text
+                content=text_to_send
             )
 
+            # 4. إرسال الرسالة
             sent_message = await send_message_with_retry(
                 bot=context.bot,
                 chat_id=CASHIER_CHAT_ID,
-                text=full_text,
+                text=text_to_send,
                 order_id=order_id,
                 message_id=message_id,
                 parse_mode="Markdown",
@@ -600,29 +627,31 @@ async def handle_channel_order(update: Update, context: CallbackContext):
 
             logger.info(f"✅ تم إرسال الطلب إلى الكاشير (order_id={order_id})")
 
+            # 5. حفظ الطلب مؤقتًا
             pending_orders[order_id] = {
                 "order_details": message_text,
                 "channel_message_id": message.message_id,
                 "message_id": sent_message.message_id
             }
 
+            # 6. حفظ الطلب في قاعدة البيانات
             await save_pending_order(order_id, message_text, message.message_id, sent_message.message_id, location)
 
+            # 7. إرسال الموقع إذا وُجد
             if location:
-                try:
-                    latitude, longitude = location
-                    await context.bot.send_location(
-                        chat_id=CASHIER_CHAT_ID,
-                        latitude=latitude,
-                        longitude=longitude
-                    )
-                    logger.info(f"✅ تم إرسال الموقع للكاشير (order_id={order_id})")
-                except Exception as e:
-                    logger.error(f"❌ فشل إرسال الموقع: {e}")
+                latitude, longitude = location
+                await context.bot.send_location(
+                    chat_id=CASHIER_CHAT_ID,
+                    latitude=latitude,
+                    longitude=longitude
+                )
+                logger.info(f"✅ تم إرسال الموقع للكاشير (order_id={order_id})")
 
         except Exception as e:
             logger.error(f"❌ خطأ أثناء إرسال الطلب إلى الكاشير: {e}")
-
+        finally:
+            # 🧹 تنظيف الطلب في حال تم حفظه جزئيًا فقط
+            pending_orders.pop(order_id, None)
 
 
 
@@ -637,16 +666,21 @@ async def handle_channel_location(update: Update, context: CallbackContext):
     latitude = message.location.latitude
     longitude = message.location.longitude
     logger.info(f"📍 تم استلام موقع: {latitude}, {longitude}")
+
+    # حفظ الموقع مؤقتًا في القاموس
     pending_locations["last_location"] = (latitude, longitude)
 
+    # الحصول على آخر طلب غير مُعالَج
     last_order_id = max(pending_orders.keys(), default=None)
     if not last_order_id:
         logger.warning("⚠️ لا يوجد طلبات حالية لربط الموقع بها.")
         return
 
+    # إضافة الموقع إلى الطلب
     pending_orders[last_order_id]["location"] = (latitude, longitude)
     updated_order_text = f"{pending_orders[last_order_id]['order_details']}\n\n📍 *تم إرفاق الموقع الجغرافي*"
 
+    # أزرار التفاعل
     keyboard = [
         [InlineKeyboardButton("✅ قبول الطلب", callback_data=f"accept_{last_order_id}")],
         [InlineKeyboardButton("❌ رفض الطلب", callback_data=f"reject_{last_order_id}")],
@@ -655,20 +689,20 @@ async def handle_channel_location(update: Update, context: CallbackContext):
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     try:
-        # 1. إرسال الموقع أولًا
+        # 1. إرسال الموقع الجغرافي
         await context.bot.send_location(
             chat_id=CASHIER_CHAT_ID,
             latitude=latitude,
             longitude=longitude
         )
-    
-        # 2. إنشاء نص الرسالة
+
+        # 2. تحضير نص الرسالة
         text = f"🆕 *طلب جديد محدث من القناة:*\n\n{updated_order_text}\n\n📌 معرف الطلب: `{last_order_id}`"
-    
-        # 3. إنشاء message_id فريد لتتبع الرسالة
+
+        # 3. توليد UUID لتتبع الرسالة
         message_id = str(uuid.uuid4())
-    
-        # 4. تسجيل الرسالة كـ pending
+
+        # 4. تسجيل الرسالة في جدول التتبع
         await track_sent_message(
             message_id=message_id,
             order_id=last_order_id,
@@ -676,8 +710,8 @@ async def handle_channel_location(update: Update, context: CallbackContext):
             destination="cashier",
             content=text
         )
-    
-        # 5. إرسال الرسالة باستخدام retry + tracking
+
+        # 5. إرسال الرسالة مع retry
         await send_message_with_retry(
             bot=context.bot,
             chat_id=CASHIER_CHAT_ID,
@@ -687,14 +721,11 @@ async def handle_channel_location(update: Update, context: CallbackContext):
             parse_mode="Markdown",
             reply_markup=reply_markup
         )
-    
+
         logger.info(f"✅ تم إرسال الطلب المحدث مع الموقع (order_id={last_order_id})")
-    
+
     except Exception as e:
         logger.error(f"❌ خطأ أثناء إرسال الطلب المحدث: {e}")
-
-
-
 
 
 async def button(update: Update, context: CallbackContext):
@@ -718,10 +749,8 @@ async def button(update: Update, context: CallbackContext):
         await query.answer("⚠️ هذا الطلب لم يعد متاحًا.", show_alert=True)
         return
 
-    # 🔐 الحصول على قفل خاص بهذا الطلب
     lock = await get_order_lock(order_id)
 
-    # 🔒 منع التداخل عند معالجة نفس الطلب
     async with lock:
         order_info = pending_orders[order_id]
         message_id = order_info.get("message_id")
@@ -743,33 +772,21 @@ async def button(update: Update, context: CallbackContext):
 
         elif action == "confirmreject":
             try:
-                # 1. إزالة الأزرار من رسالة الكاشير
                 await context.bot.edit_message_reply_markup(
                     chat_id=CASHIER_CHAT_ID,
                     message_id=message_id,
                     reply_markup=None
                 )
-            
-                # 2. إنشاء نص الرفض
+
                 reject_message = create_order_rejected_message(
                     order_id=order_id,
                     order_number=extract_order_number(order_details),
                     reason="قد تكون معلومات المستخدم غير مكتملة أو غير واضحة."
                 )
-            
-                # 3. إنشاء معرف الرسالة
+
                 message_id_out = str(uuid.uuid4())
-            
-                # 4. تسجيل الرسالة كـ pending
-                await track_sent_message(
-                    message_id=message_id_out,
-                    order_id=order_id,
-                    source="restaurant_bot",
-                    destination="channel",
-                    content=reject_message
-                )
-            
-                # 5. إرسال الرسالة إلى القناة مع تتبع
+                await track_sent_message(message_id_out, order_id, "restaurant_bot", "channel", reject_message)
+
                 await send_message_with_retry(
                     bot=context.bot,
                     chat_id=CHANNEL_ID,
@@ -778,26 +795,25 @@ async def button(update: Update, context: CallbackContext):
                     message_id=message_id_out,
                     parse_mode="Markdown"
                 )
-            
+
                 logger.info(f"✅ تم رفض الطلب وإبلاغ المستخدم. (order_id={order_id})")
-            
+
             except TelegramError as e:
                 logger.error(f"❌ فشل في إرسال إشعار رفض الطلب: {e}")
             finally:
-                pending_orders.pop(order_id, None)  # 🧹 تنظيف الطلب
-            
-            
-                    elif action == "back":
-                        try:
-                            await query.edit_message_reply_markup(
-                                reply_markup=InlineKeyboardMarkup([
-                                    [InlineKeyboardButton("✅ قبول الطلب", callback_data=f"accept_{order_id}")],
-                                    [InlineKeyboardButton("❌ رفض الطلب", callback_data=f"reject_{order_id}")],
-                                    [InlineKeyboardButton("🚨 شكوى عن الزبون أو الطلب", callback_data=f"complain_{order_id}")]
-                                ])
-                            )
-                        except TelegramError as e:
-                            logger.error(f"❌ فشل في عرض أزرار الرجوع: {e}")
+                pending_orders.pop(order_id, None)
+
+        elif action == "back":
+            try:
+                await query.edit_message_reply_markup(
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("✅ قبول الطلب", callback_data=f"accept_{order_id}")],
+                        [InlineKeyboardButton("❌ رفض الطلب", callback_data=f"reject_{order_id}")],
+                        [InlineKeyboardButton("🚨 شكوى عن الزبون أو الطلب", callback_data=f"complain_{order_id}")]
+                    ])
+                )
+            except TelegramError as e:
+                logger.error(f"❌ فشل في عرض أزرار الرجوع: {e}")
 
         elif action == "complain":
             try:
@@ -823,8 +839,7 @@ async def button(update: Update, context: CallbackContext):
 
             reason_text = reason_map.get(report_type, "شكوى غير معروفة")
 
-           try:
-                # رسالة 1: إلى قناة الشكاوى
+            try:
                 complaint_text = (
                     f"📣 *شكوى من الكاشير على الطلب:*\n"
                     f"📌 معرف الطلب: `{order_id}`\n"
@@ -841,8 +856,7 @@ async def button(update: Update, context: CallbackContext):
                     message_id=message_id_1,
                     parse_mode="Markdown"
                 )
-            
-                # رسالة 2: إلى قناة المستخدم
+
                 cancel_text = (
                     f"🚫 تم إلغاء الطلب بسبب شكوى الكاشير.\n"
                     f"📌 معرف الطلب: `{order_id}`\n"
@@ -858,15 +872,13 @@ async def button(update: Update, context: CallbackContext):
                     message_id=message_id_2,
                     parse_mode="Markdown"
                 )
-            
-                # إزالة الأزرار من رسالة الكاشير
+
                 await context.bot.edit_message_reply_markup(
                     chat_id=CASHIER_CHAT_ID,
                     message_id=message_id,
                     reply_markup=None
                 )
-            
-                # رسالة 3: تأكيد الشكوى للكاشير
+
                 confirmation_text = "📨 تم إرسال الشكوى وإلغاء الطلب. سيتواصل معكم فريق الدعم إذا لزم الأمر."
                 message_id_3 = str(uuid.uuid4())
                 await track_sent_message(message_id_3, order_id, "restaurant_bot", "cashier", confirmation_text)
@@ -877,9 +889,9 @@ async def button(update: Update, context: CallbackContext):
                     order_id=order_id,
                     message_id=message_id_3
                 )
-            
+
                 logger.info(f"✅ تم إرسال شكوى بنجاح وتم تنظيف الطلب: {order_id}")
-            
+
             except TelegramError as e:
                 logger.error(f"❌ خطأ أثناء إرسال الشكوى: {e}")
             finally:
@@ -887,55 +899,42 @@ async def button(update: Update, context: CallbackContext):
 
 
 
+
 async def handle_time_selection(update: Update, context: CallbackContext):
     query = update.callback_query
     await query.answer()
 
-    _, time_selected, order_id = query.data.split("_")
+    match = re.match(r"time_(\d+\+?)_(.+)", query.data)
+    if not match:
+        return
 
-    # 🔐 الحصول على قفل خاص بهذا الطلب
+    time_selected, order_id = match.groups()
+
+    if order_id not in pending_orders:
+        await query.answer("⚠️ الطلب غير متاح حالياً.", show_alert=True)
+        return
+
     lock = await get_order_lock(order_id)
 
-    # 🔒 استخدام القفل لمنع التداخل
     async with lock:
-        # تحديث الأزرار
-        keyboard = [
-            [InlineKeyboardButton(f"✅ {t} دقيقة" if str(t) == time_selected else f"{t} دقيقة", callback_data=f"time_{t}_{order_id}")]
-            for t in [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 60, 75, 90]
-        ]
-        keyboard.append([InlineKeyboardButton("🚗 جاهز ليطلع", callback_data=f"ready_{order_id}")])
-        keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data=f"back_{order_id}")])
-        reply_markup = InlineKeyboardMarkup(keyboard)
+        order_info = pending_orders[order_id]
+        message_id = order_info.get("message_id")
+        order_details = order_info.get("order_details", "")
+        order_number = extract_order_number(order_details)
 
         try:
-            await query.edit_message_reply_markup(reply_markup=reply_markup)
-        except Exception as e:
-            logger.warning(f"⚠️ لم يتم تحديث الأزرار: {e}")
-
-        order_data = pending_orders.get(order_id)
-        if not order_data:
-            logger.warning(f"⚠️ الطلب غير موجود في pending_orders: {order_id}")
-            return
-
-        order_details = order_data["order_details"]
-
-        # بناء الرسالة الموحدة للمستخدم
-        accept_message = create_order_accepted_message(
-            order_id=order_id,
-            order_number=extract_order_number(order_details),
-            delivery_time=time_selected
-        )
-
-        try:
-            # 📨 رسالة القبول إلى القناة
-            message_id_channel = str(uuid.uuid4())
-            await track_sent_message(
-                message_id=message_id_channel,
-                order_id=order_id,
-                source="restaurant_bot",
-                destination="channel",
-                content=accept_message
+            # إزالة الأزرار
+            await context.bot.edit_message_reply_markup(
+                chat_id=CASHIER_CHAT_ID,
+                message_id=message_id,
+                reply_markup=None
             )
+
+            # إرسال إشعار القبول للمستخدم
+            accept_message = create_order_accepted_message(order_id, order_number, time_selected)
+
+            message_id_channel = str(uuid.uuid4())
+            await track_sent_message(message_id_channel, order_id, "restaurant_bot", "channel", accept_message)
             await send_message_with_retry(
                 bot=context.bot,
                 chat_id=CHANNEL_ID,
@@ -944,17 +943,11 @@ async def handle_time_selection(update: Update, context: CallbackContext):
                 message_id=message_id_channel,
                 parse_mode="Markdown"
             )
-        
-            # 📨 رسالة تأكيد القبول إلى الكاشير
+
+            # إرسال تأكيد القبول للكاشير
             confirm_text = f"✅ تم قبول الطلب وإبلاغ المستخدم بوقت التوصيل: {time_selected} دقيقة."
             message_id_cashier = str(uuid.uuid4())
-            await track_sent_message(
-                message_id=message_id_cashier,
-                order_id=order_id,
-                source="restaurant_bot",
-                destination="cashier",
-                content=confirm_text
-            )
+            await track_sent_message(message_id_cashier, order_id, "restaurant_bot", "cashier", confirm_text)
             await send_message_with_retry(
                 bot=context.bot,
                 chat_id=CASHIER_CHAT_ID,
@@ -962,13 +955,16 @@ async def handle_time_selection(update: Update, context: CallbackContext):
                 order_id=order_id,
                 message_id=message_id_cashier
             )
-        
+
             logger.info(f"✅ تم قبول الطلب وإبلاغ المستخدم. (order_id={order_id}, time={time_selected})")
-        
+
         except Exception as e:
             logger.error(f"❌ فشل في إرسال إشعار القبول: {e}")
+
         finally:
+            # 🧹 تنظيف الطلب
             pending_orders.pop(order_id, None)
+
 
 
 

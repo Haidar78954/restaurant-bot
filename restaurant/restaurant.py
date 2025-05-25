@@ -972,43 +972,52 @@ async def handle_time_selection(update: Update, context: CallbackContext):
 
 
 
-
 # 🔔 إعادة إرسال التذكير كما هو
 async def handle_channel_reminder(update: Update, context: CallbackContext):
     message = update.channel_post
     if not message or message.chat_id != CHANNEL_ID:
         return
 
-    if "تذكير من الزبون" in message.text:
-        logger.info(f"📥 استلم البوت تذكيرًا جديدًا: {message.text}")
-        try:
-            # 1. تجهيز النص
-            reminder_text = f"🔔 *تذكير من الزبون!*\n\n{message.text}"
-        
-            # 2. توليد message_id وتتبع الرسالة
-            message_id = str(uuid.uuid4())
-            await track_sent_message(
-                message_id=message_id,
-                order_id=order_id,
-                source="restaurant_bot",
-                destination="cashier",
-                content=reminder_text
-            )
-        
-            # 3. الإرسال مع ربط message_id
-            await send_message_with_retry(
-                bot=context.bot,
-                chat_id=CASHIER_CHAT_ID,
-                text=reminder_text,
-                order_id=order_id,
-                message_id=message_id,
-                parse_mode="Markdown"
-            )
-        
-            logger.info("📩 تم إرسال التذكير إلى الكاشير بنجاح!")
-        
-        except Exception as e:
-            logger.error(f"⚠️ خطأ أثناء إرسال التذكير إلى الكاشير: {e}")
+    text = message.text or ""
+    if "تذكير من الزبون" not in text:
+        return
+
+    logger.info(f"📥 استلم البوت تذكيرًا جديدًا: {text}")
+
+    # استخراج معرف الطلب
+    order_id = extract_order_id(text)
+    if not order_id:
+        logger.warning("⚠️ لم يتم العثور على معرف الطلب في التذكير.")
+        return
+
+    try:
+        # 1. تجهيز النص
+        reminder_text = f"🔔 *تذكير من الزبون!*\n\n{text}"
+
+        # 2. توليد message_id وتتبع الرسالة
+        message_id = str(uuid.uuid4())
+        await track_sent_message(
+            message_id=message_id,
+            order_id=order_id,
+            source="restaurant_bot",
+            destination="cashier",
+            content=reminder_text
+        )
+
+        # 3. الإرسال مع ربط message_id
+        await send_message_with_retry(
+            bot=context.bot,
+            chat_id=CASHIER_CHAT_ID,
+            text=reminder_text,
+            order_id=order_id,
+            message_id=message_id,
+            parse_mode="Markdown"
+        )
+
+        logger.info("📩 تم إرسال التذكير إلى الكاشير بنجاح!")
+
+    except Exception as e:
+        logger.error(f"⚠️ خطأ أثناء إرسال التذكير إلى الكاشير: {e}")
 
 
 # 🔔 إعادة إرسال التذكير بصيغة أخرى
@@ -1050,41 +1059,52 @@ async def handle_reminder_message(update: Update, context: CallbackContext):
 
 
 # ⏳ استفسار "كم يتبقى؟"
+# ⏳ استفسار "كم يتبقى؟"
 async def handle_time_left_question(update: Update, context: CallbackContext):
     message = update.channel_post
     if not message or message.chat_id != CHANNEL_ID:
         return
 
-    if "كم يتبقى" in message.text and "الطلب رقم" in message.text:
-        logger.info("📥 تم استلام استفسار عن المدة المتبقية للطلب...")
-        try:
-            # 1. إعداد النص
-            text = f"⏳ *استفسار من الزبون:*\n\n{message.text}"
-        
-            # 2. توليد معرف رسالة فريد وتتبع الرسالة
-            message_id = str(uuid.uuid4())
-            await track_sent_message(
-                message_id=message_id,
-                order_id=order_id,  # تأكد أن order_id متوفر أو استخرجه من السياق
-                source="restaurant_bot",
-                destination="cashier",
-                content=text
-            )
-        
-            # 3. إرسال الرسالة مع إعادة المحاولة
-            await send_message_with_retry(
-                bot=context.bot,
-                chat_id=CASHIER_CHAT_ID,
-                text=text,
-                order_id=order_id,
-                message_id=message_id,
-                parse_mode="Markdown"
-            )
-        
-            logger.info("✅ تم إرسال الاستفسار إلى الكاشير بنجاح.")
-        
-        except Exception as e:
-            logger.error(f"❌ خطأ أثناء إرسال الاستفسار للكاشير: {e}")
+    text = message.text or ""
+    if "كم يتبقى" not in text or "الطلب رقم" not in text:
+        return
+
+    logger.info("📥 تم استلام استفسار عن المدة المتبقية للطلب...")
+
+    # استخراج معرف الطلب
+    order_id = extract_order_id(text)
+    if not order_id:
+        logger.warning("⚠️ لم يتم العثور على معرف الطلب في استفسار الوقت.")
+        return
+
+    try:
+        # 1. إعداد النص
+        inquiry_text = f"⏳ *استفسار من الزبون:*\n\n{text}"
+
+        # 2. توليد معرف رسالة فريد وتتبع الرسالة
+        message_id = str(uuid.uuid4())
+        await track_sent_message(
+            message_id=message_id,
+            order_id=order_id,
+            source="restaurant_bot",
+            destination="cashier",
+            content=inquiry_text
+        )
+
+        # 3. إرسال الرسالة مع إعادة المحاولة
+        await send_message_with_retry(
+            bot=context.bot,
+            chat_id=CASHIER_CHAT_ID,
+            text=inquiry_text,
+            order_id=order_id,
+            message_id=message_id,
+            parse_mode="Markdown"
+        )
+
+        logger.info("✅ تم إرسال الاستفسار إلى الكاشير بنجاح.")
+
+    except Exception as e:
+        logger.error(f"❌ خطأ أثناء إرسال الاستفسار للكاشير: {e}")
 
 
 

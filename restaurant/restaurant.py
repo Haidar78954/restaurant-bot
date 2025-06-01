@@ -1423,10 +1423,11 @@ async def handle_add_delivery(update: Update, context: CallbackContext):
 
         try:
             async with get_db_connection() as db:
-                await db.execute(
-                    "INSERT INTO delivery_persons (restaurant, name, phone) VALUES (?, ?, ?)",
-                    (restaurant_name, name, phone)
-                )
+                async with db.cursor() as cursor:
+                    await cursor.execute(
+                        "INSERT INTO delivery_persons (restaurant, name, phone) VALUES (%s, %s, %s)",
+                        (restaurant_name, name, phone)
+                    )
                 await db.commit()
 
             # ✅ إنهاء العملية
@@ -1456,9 +1457,12 @@ async def handle_delete_delivery_menu(update: Update, context: CallbackContext):
 
     try:
         async with get_db_connection() as db:
-            async with db.execute(
-                "SELECT name FROM delivery_persons WHERE restaurant = ?", (restaurant_name,)
-            ) as cursor:
+            async with db.cursor() as cursor:
+                await cursor.execute(
+                    "SELECT name FROM delivery_persons WHERE restaurant = %s", (restaurant_name,)
+                )
+                rows = await cursor.fetchall()
+
                 rows = await cursor.fetchall()
 
         if not rows:
@@ -1507,11 +1511,13 @@ async def handle_delete_delivery_choice(update: Update, context: CallbackContext
 
     try:
         async with get_db_connection() as db:
-            await db.execute(
-                "DELETE FROM delivery_persons WHERE restaurant = ? AND name = ?",
-                (restaurant_name, text)
-            )
+            async with db.cursor() as cursor:
+                await cursor.execute(
+                    "DELETE FROM delivery_persons WHERE restaurant = %s AND name = %s",
+                    (restaurant_name, text)
+                )
             await db.commit()
+
 
         context.user_data.pop("delivery_action", None)
 

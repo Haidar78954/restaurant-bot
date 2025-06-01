@@ -117,13 +117,12 @@ async def send_message_with_retry(bot, chat_id, text, order_id=None, max_retries
 async def start_order_queue_processor():
     while True:
         try:
-            if order_queue:
-                order_id, callback = order_queue.pop(0)
-                await callback(order_id)
-            await asyncio.sleep(0.1)
+            order_id, callback = await order_queue.get()
+            await callback(order_id)
         except Exception as e:
             logger.error(f"❌ خطأ في start_order_queue_processor: {e}")
             await asyncio.sleep(1)
+
 
 
 

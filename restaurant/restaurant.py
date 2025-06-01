@@ -167,7 +167,6 @@ async def get_db_connection():
         
 async def initialize_database():
     try:
-        # إنشاء الاتصال بقاعدة البيانات
         conn = pymysql.connect(
             host=DB_HOST,
             user=DB_USER,
@@ -196,9 +195,10 @@ async def initialize_database():
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS delivery_persons (
                 id INT AUTO_INCREMENT PRIMARY KEY,
-                restaurant VARCHAR(255) NOT NULL,
+                restaurant_id INT NOT NULL,
                 name VARCHAR(255) NOT NULL,
-                phone VARCHAR(20) NOT NULL
+                phone VARCHAR(20) NOT NULL,
+                FOREIGN KEY (restaurant_id) REFERENCES restaurants(id) ON DELETE CASCADE
             )
         """)
 
@@ -210,11 +210,6 @@ async def initialize_database():
     except Exception as e:
         logger.error(f"❌ خطأ أثناء إنشاء الجداول: {e}")
 
-
-        logger.info("✅ تم التأكد من وجود جدول الطلبات وجدول الدليفري.")
-
-    except Exception as e:
-        logger.error(f"❌ خطأ أثناء إنشاء الجداول: {e}")
 
 
 # 🔹 إعداد سجل الأخطاء
@@ -544,13 +539,35 @@ main_menu_keyboard = ReplyKeyboardMarkup(
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    restaurant_name = context.user_data.get("restaurant")
+
     try:
+        async with await get_db_connection() as db:
+            async with db.execute(
+                "SELECT COUNT(*) FROM delivery_persons WHERE restaurant = ?", (restaurant_name,)
+            ) as cursor:
+                result = await cursor.fetchone()
+                delivery_count = result[0] if result else 0
+
+        if delivery_count == 0:
+            await update.message.reply_text(
+                "🚫 لا يمكنك استقبال الطلبات حاليًا.\n"
+                "يجب عليك إضافة دليفري واحد على الأقل لتفعيل الخدمة.\n\n"
+                "➕ أضف دليفري الآن من خلال /start ثم اختر ➕ إضافة دليفري.",
+                reply_markup=ReplyKeyboardMarkup([["➕ إضافة دليفري"]], resize_keyboard=True)
+            )
+            return
+
         await update.message.reply_text(
             "✅ بوت المطعم جاهز لاستقبال الطلبات !",
             reply_markup=main_menu_keyboard
         )
+
     except Exception as e:
         logger.error(f"❌ خطأ في دالة start: {e}")
+        await update.message.reply_text("⚠️ حدث خطأ أثناء التحقق من الدليفري.")
+
 
 
 # ✅ استقبال طلب من القناة
@@ -1417,9 +1434,13 @@ async def handle_add_delivery(update: Update, context: CallbackContext):
             logger.error(f"❌ خطأ أثناء إضافة الدليفري: {e}")
             await update.message.reply_text("⚠️ حدث خطأ أثناء حفظ الدليفري. حاول مرة أخرى.")
 
+
+
 async def ask_add_delivery_name(update: Update, context: CallbackContext):
     context.user_data["delivery_action"] = "adding_name"
     await update.message.reply_text("🧑‍💼 ما اسم الدليفري؟", reply_markup=ReplyKeyboardMarkup([["🔙 رجوع"]], resize_keyboard=True))
+
+
 
 async def handle_delete_delivery_menu(update: Update, context: CallbackContext):
     restaurant_name = context.user_data.get("restaurant")
@@ -1437,6 +1458,16 @@ async def handle_delete_delivery_menu(update: Update, context: CallbackContext):
             ))
             return
 
+        if len(rows) == 1:
+            await update.message.reply_text(
+                "🚫 لا يمكنك حذف آخر دليفري.\n"
+                "أضف بديلاً له أولاً قبل الحذف.",
+                reply_markup=ReplyKeyboardMarkup(
+                    [["➕ إضافة دليفري"], ["🔙 رجوع"]], resize_keyboard=True
+                )
+            )
+            return
+
         names = [row[0] for row in rows]
         context.user_data["delivery_action"] = "deleting"
         await update.message.reply_text(
@@ -1447,6 +1478,7 @@ async def handle_delete_delivery_menu(update: Update, context: CallbackContext):
     except Exception as e:
         logger.error(f"❌ خطأ أثناء جلب قائمة الدليفري للحذف: {e}")
         await update.message.reply_text("⚠️ حدث خطأ أثناء عرض القائمة.")
+
 
 
 async def handle_delete_delivery_choice(update: Update, context: CallbackContext):

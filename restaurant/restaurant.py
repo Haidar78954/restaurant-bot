@@ -639,10 +639,10 @@ async def handle_channel_order(update: Update, context: CallbackContext):
         try:
             # 1. بناء النص
             text_to_send = f"🆕 *طلب جديد من القناة:*\n\n{message_text}\n\n📌 *معرف الطلب:* `{order_id}`"
-
+    
             # 2. إنشاء معرف تتبع
             message_id = str(uuid.uuid4())
-
+    
             # 3. تتبع الرسالة
             await track_sent_message(
                 message_id=message_id,
@@ -651,8 +651,18 @@ async def handle_channel_order(update: Update, context: CallbackContext):
                 destination="cashier",
                 content=text_to_send
             )
-
-            # 4. إرسال الرسالة
+    
+            # 4. إرسال الموقع أولًا (إن وُجد)
+            if location:
+                latitude, longitude = location
+                await context.bot.send_location(
+                    chat_id=CASHIER_CHAT_ID,
+                    latitude=latitude,
+                    longitude=longitude
+                )
+                logger.info(f"✅ تم إرسال الموقع للكاشير (order_id={order_id})")
+    
+            # 5. إرسال الرسالة بعد الموقع
             sent_message = await send_message_with_retry(
                 bot=context.bot,
                 chat_id=CASHIER_CHAT_ID,
@@ -662,33 +672,22 @@ async def handle_channel_order(update: Update, context: CallbackContext):
                 parse_mode="Markdown",
                 reply_markup=reply_markup
             )
-
+    
             logger.info(f"✅ تم إرسال الطلب إلى الكاشير (order_id={order_id})")
-
-            # 5. حفظ الطلب مؤقتًا
+    
+            # 6. حفظ الطلب مؤقتًا
             pending_orders[order_id] = {
                 "order_details": message_text,
                 "channel_message_id": message.message_id,
                 "message_id": sent_message.message_id
             }
-
-            # 6. حفظ الطلب في قاعدة البيانات
+    
+            # 7. حفظ الطلب في قاعدة البيانات
             await save_pending_order(order_id, message_text, message.message_id, sent_message.message_id, location)
-
-            # 7. إرسال الموقع إذا وُجد
-            if location:
-                latitude, longitude = location
-                await context.bot.send_location(
-                    chat_id=CASHIER_CHAT_ID,
-                    latitude=latitude,
-                    longitude=longitude
-                )
-                logger.info(f"✅ تم إرسال الموقع للكاشير (order_id={order_id})")
-
+    
         except Exception as e:
             logger.error(f"❌ خطأ أثناء إرسال الطلب إلى الكاشير: {e}")
         finally:
-            # 🧹 تنظيف الطلب في حال تم حفظه جزئيًا فقط
             pending_orders.pop(order_id, None)
 
 

@@ -552,10 +552,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     restaurant_name = context.user_data.get("restaurant")
 
     try:
-        async with get_db_connection() as db:
-            async with db.execute(
-                "SELECT COUNT(*) FROM delivery_persons WHERE restaurant = ?", (restaurant_name,)
-            ) as cursor:
+        async with get_db_connection() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute(
+                    "SELECT COUNT(*) FROM delivery_persons WHERE restaurant = %s", (restaurant_name,)
+                )
                 result = await cursor.fetchone()
                 delivery_count = result[0] if result else 0
 
@@ -576,7 +577,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"❌ خطأ في دالة start: {e}")
         await update.message.reply_text("⚠️ حدث خطأ أثناء التحقق من الدليفري.")
-
 
 
 # ✅ استقبال طلب من القناة

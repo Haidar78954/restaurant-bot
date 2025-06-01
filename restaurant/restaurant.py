@@ -549,13 +549,19 @@ main_menu_keyboard = ReplyKeyboardMarkup(
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    restaurant_name = context.user_data.get("restaurant")
+
+    # مثال: استخرج restaurant_id من ملف config أو السياق (حسب البنية عندك)
+    restaurant_id = context.user_data.get("restaurant_id")  # تأكد أنه تم تخزينه مسبقًا
+
+    if not restaurant_id:
+        await update.message.reply_text("⚠️ معرف المطعم غير معروف. أعد تشغيل البوت.")
+        return
 
     try:
         async with get_db_connection() as conn:
             async with conn.cursor() as cursor:
                 await cursor.execute(
-                    "SELECT COUNT(*) FROM delivery_persons WHERE restaurant = %s", (restaurant_name,)
+                    "SELECT COUNT(*) FROM delivery_persons WHERE restaurant_id = %s", (restaurant_id,)
                 )
                 result = await cursor.fetchone()
                 delivery_count = result[0] if result else 0
@@ -1399,7 +1405,6 @@ async def handle_delivery_menu(update: Update, context: CallbackContext):
 async def handle_add_delivery(update: Update, context: CallbackContext):
     text = update.message.text
 
-    # 🔙 الرجوع من أي خطوة
     if text == "🔙 رجوع":
         context.user_data.pop("delivery_action", None)
         context.user_data.pop("new_delivery_name", None)
@@ -1409,28 +1414,29 @@ async def handle_add_delivery(update: Update, context: CallbackContext):
 
     action = context.user_data.get("delivery_action")
 
-    # 🧑‍💼 المرحلة 1: استلام الاسم
     if action == "adding_name":
         context.user_data["new_delivery_name"] = text
         context.user_data["delivery_action"] = "adding_phone"
         await update.message.reply_text("📞 ما رقم الهاتف؟", reply_markup=ReplyKeyboardMarkup([["🔙 رجوع"]], resize_keyboard=True))
 
-    # ☎️ المرحلة 2: استلام الرقم وحفظ البيانات
     elif action == "adding_phone":
         name = context.user_data.get("new_delivery_name")
         phone = text
-        restaurant_name = context.user_data.get("restaurant")  # تأكد أنه مخزن مسبقًا
+        restaurant_id = context.user_data.get("restaurant_id")
+
+        if not restaurant_id:
+            await update.message.reply_text("⚠️ معرف المطعم غير معروف. أعد تشغيل البوت.")
+            return
 
         try:
             async with get_db_connection() as db:
                 async with db.cursor() as cursor:
                     await cursor.execute(
-                        "INSERT INTO delivery_persons (restaurant, name, phone) VALUES (%s, %s, %s)",
-                        (restaurant_name, name, phone)
+                        "INSERT INTO delivery_persons (restaurant_id, name, phone) VALUES (%s, %s, %s)",
+                        (restaurant_id, name, phone)
                     )
                 await db.commit()
 
-            # ✅ إنهاء العملية
             context.user_data.pop("delivery_action", None)
             context.user_data.pop("new_delivery_name", None)
 

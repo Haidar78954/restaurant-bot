@@ -552,7 +552,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     restaurant_name = context.user_data.get("restaurant")
 
     try:
-        async with await get_db_connection() as db:
+        async with get_db_connection() as db:
             async with db.execute(
                 "SELECT COUNT(*) FROM delivery_persons WHERE restaurant = ?", (restaurant_name,)
             ) as cursor:
@@ -1422,7 +1422,7 @@ async def handle_add_delivery(update: Update, context: CallbackContext):
         restaurant_name = context.user_data.get("restaurant")  # تأكد أنه مخزن مسبقًا
 
         try:
-            async with await get_db_connection() as db:
+            async with get_db_connection() as db:
                 await db.execute(
                     "INSERT INTO delivery_persons (restaurant, name, phone) VALUES (?, ?, ?)",
                     (restaurant_name, name, phone)
@@ -1455,7 +1455,7 @@ async def handle_delete_delivery_menu(update: Update, context: CallbackContext):
     restaurant_name = context.user_data.get("restaurant")
 
     try:
-        async with await get_db_connection() as db:
+        async with get_db_connection() as db:
             async with db.execute(
                 "SELECT name FROM delivery_persons WHERE restaurant = ?", (restaurant_name,)
             ) as cursor:
@@ -1506,7 +1506,7 @@ async def handle_delete_delivery_choice(update: Update, context: CallbackContext
     restaurant_name = context.user_data.get("restaurant")
 
     try:
-        async with await get_db_connection() as db:
+        async with get_db_connection() as db:
             await db.execute(
                 "DELETE FROM delivery_persons WHERE restaurant = ? AND name = ?",
                 (restaurant_name, text)

@@ -105,6 +105,9 @@ async def send_message_with_retry(bot, chat_id, text, order_id=None, max_retries
             # ✅ التحكم بمعدل الإرسال
             await telegram_limiter.acquire()
 
+            # ✅ إزالة أي مفاتيح غير مدعومة
+            kwargs.pop("message_id", None)
+
             # ✅ إرسال الرسالة
             sent_message = await bot.send_message(chat_id=chat_id, text=text, **kwargs)
             return sent_message

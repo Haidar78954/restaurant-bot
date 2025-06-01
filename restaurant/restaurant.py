@@ -1,6 +1,7 @@
 import sys
 import json 
 import logging
+import uuid
 import re
 import os
 import traceback
@@ -1407,11 +1408,10 @@ async def handle_add_delivery(update: Update, context: CallbackContext):
     text = update.message.text
 
     if text == "🔙 رجوع":
-        context.user_data.pop("delivery_action", None)
-        context.user_data.pop("new_delivery_name", None)
-        reply_keyboard = [["➕ إضافة دليفري", "❌ حذف دليفري"], ["🔙 رجوع"]]
-        await update.message.reply_text("⬅️ تم الرجوع إلى قائمة الدليفري.", reply_markup=ReplyKeyboardMarkup(reply_keyboard, resize_keyboard=True))
+        context.user_data.clear()  # مسح الحالة
+        await start(update, context)  # استدعاء دالة start مباشرة
         return
+
 
     action = context.user_data.get("delivery_action")
 
@@ -1504,10 +1504,10 @@ async def handle_delete_delivery_choice(update: Update, context: CallbackContext
     text = update.message.text
 
     if text == "🔙 رجوع":
-        context.user_data.pop("delivery_action", None)
-        reply_keyboard = [["➕ إضافة دليفري", "❌ حذف دليفري"], ["🔙 رجوع"]]
-        await update.message.reply_text("⬅️ تم الرجوع إلى قائمة الدليفري.", reply_markup=ReplyKeyboardMarkup(reply_keyboard, resize_keyboard=True))
+        context.user_data.clear()  # مسح الحالة
+        await start(update, context)  # استدعاء دالة start مباشرة
         return
+
 
     if context.user_data.get("delivery_action") != "deleting":
         return

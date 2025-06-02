@@ -1885,12 +1885,13 @@ async def run_bot():
     app.add_handler(CallbackQueryHandler(button, pattern=r"^(accept|reject|confirmreject|back|complain|report_(delivery|phone|location|other))_.+"))
     app.add_handler(CallbackQueryHandler(handle_time_selection, pattern=r"^time_\d+_.+"))
 
-    # ✅ إدارة الدليفري
+   # ✅ إدارة الدليفري
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex("🚚 الدليفري"), handle_delivery_menu))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex("➕ إضافة دليفري"), ask_add_delivery_name))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_add_delivery))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex("❌ حذف دليفري"), handle_delete_delivery_menu))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_delete_delivery_choice))
+    app.add_handler(MessageHandler(filters.TEXT & filters.Regex("^(?!➕ إضافة دليفري|❌ حذف دليفري|🚚 الدليفري).+"), handle_delete_delivery_choice))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_add_delivery)) 
+
 
     # ✅ أوامر الإحصائيات
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex("📊 عدد الطلبات اليوم والدخل"), handle_today_stats))

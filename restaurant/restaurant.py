@@ -1447,29 +1447,42 @@ async def handle_rating_message(update: Update, context: CallbackContext):
 
 
 
+
+
 async def handle_delivery_menu(update: Update, context: CallbackContext):
+    context.user_data["delivery_action"] = "menu"
     reply_keyboard = [["➕ إضافة دليفري", "❌ حذف دليفري"], ["🔙 رجوع"]]
     await update.message.reply_text(
-        "📦 إدارة :\nاختر الإجراء المطلوب:",
+        "📦 إدارة الدليفري:\nاختر الإجراء المطلوب:",
         reply_markup=ReplyKeyboardMarkup(reply_keyboard, resize_keyboard=True)
     )
-    context.user_data["delivery_action"] = "menu"
+
+
+async def ask_add_delivery_name(update: Update, context: CallbackContext):
+    context.user_data["delivery_action"] = "adding_name"
+    await update.message.reply_text(
+        "🧑‍💼 ما اسم الدليفري؟",
+        reply_markup=ReplyKeyboardMarkup([["🔙 رجوع"]], resize_keyboard=True)
+    )
+
 
 async def handle_add_delivery(update: Update, context: CallbackContext):
-    text = update.message.text
+    text = update.message.text.strip()
 
     if text == "🔙 رجوع":
-        context.user_data.clear()  # مسح الحالة
-        await start(update, context)  # استدعاء دالة start مباشرة
+        context.user_data.clear()
+        await start(update, context)
         return
-
 
     action = context.user_data.get("delivery_action")
 
     if action == "adding_name":
         context.user_data["new_delivery_name"] = text
         context.user_data["delivery_action"] = "adding_phone"
-        await update.message.reply_text("📞 ما رقم الهاتف؟", reply_markup=ReplyKeyboardMarkup([["🔙 رجوع"]], resize_keyboard=True))
+        await update.message.reply_text(
+            "📞 ما رقم الهاتف؟",
+            reply_markup=ReplyKeyboardMarkup([["🔙 رجوع"]], resize_keyboard=True)
+        )
 
     elif action == "adding_phone":
         name = context.user_data.get("new_delivery_name")
@@ -1503,37 +1516,29 @@ async def handle_add_delivery(update: Update, context: CallbackContext):
             await update.message.reply_text("⚠️ حدث خطأ أثناء حفظ الدليفري. حاول مرة أخرى.")
 
 
-
-async def ask_add_delivery_name(update: Update, context: CallbackContext):
-    context.user_data["delivery_action"] = "adding_name"
-    await update.message.reply_text("🧑‍💼 ما اسم الدليفري؟", reply_markup=ReplyKeyboardMarkup([["🔙 رجوع"]], resize_keyboard=True))
-
-
-
 async def handle_delete_delivery_menu(update: Update, context: CallbackContext):
-    restaurant_id = RESTAURANT_ID  # من config
+    restaurant_id = RESTAURANT_ID
 
     try:
         async with get_db_connection() as db:
             async with db.cursor() as cursor:
                 await cursor.execute(
-                    "SELECT name FROM delivery_persons WHERE restaurant_id = %s", (restaurant_id,)
+                    "SELECT name FROM delivery_persons WHERE restaurant_id = %s",
+                    (restaurant_id,)
                 )
                 rows = await cursor.fetchall()
 
         if not rows:
-            await update.message.reply_text("⚠️ لا يوجد أي دليفري مسجل حالياً.", reply_markup=ReplyKeyboardMarkup(
-                [["➕ إضافة دليفري", "❌ حذف دليفري"], ["🔙 رجوع"]], resize_keyboard=True
-            ))
+            await update.message.reply_text(
+                "⚠️ لا يوجد أي دليفري مسجل حالياً.",
+                reply_markup=ReplyKeyboardMarkup([["➕ إضافة دليفري"], ["🔙 رجوع"]], resize_keyboard=True)
+            )
             return
 
         if len(rows) == 1:
             await update.message.reply_text(
-                "🚫 لا يمكنك حذف آخر دليفري.\n"
-                "أضف بديلاً له أولاً قبل الحذف.",
-                reply_markup=ReplyKeyboardMarkup(
-                    [["➕ إضافة دليفري"], ["🔙 رجوع"]], resize_keyboard=True
-                )
+                "🚫 لا يمكنك حذف آخر دليفري.\nأضف بديلاً له أولاً قبل الحذف.",
+                reply_markup=ReplyKeyboardMarkup([["➕ إضافة دليفري"], ["🔙 رجوع"]], resize_keyboard=True)
             )
             return
 
@@ -1549,21 +1554,18 @@ async def handle_delete_delivery_menu(update: Update, context: CallbackContext):
         await update.message.reply_text("⚠️ حدث خطأ أثناء عرض القائمة.")
 
 
-
-
 async def handle_delete_delivery_choice(update: Update, context: CallbackContext):
-    text = update.message.text
+    text = update.message.text.strip()
 
     if text == "🔙 رجوع":
-        context.user_data.clear()  # مسح الحالة
-        await start(update, context)  # استدعاء دالة start مباشرة
+        context.user_data.clear()
+        await start(update, context)
         return
-
 
     if context.user_data.get("delivery_action") != "deleting":
         return
 
-    restaurant_id = RESTAURANT_ID  # من ملف config
+    restaurant_id = RESTAURANT_ID
 
     try:
         async with get_db_connection() as db:
@@ -1586,6 +1588,16 @@ async def handle_delete_delivery_choice(update: Update, context: CallbackContext
         logger.error(f"❌ خطأ أثناء حذف الدليفري: {e}")
         await update.message.reply_text("⚠️ حدث خطأ أثناء حذف الدليفري.")
 
+
+async def unified_delivery_router(update: Update, context: CallbackContext):
+    action = context.user_data.get("delivery_action")
+
+    if action in ["adding_name", "adding_phone"]:
+        await handle_add_delivery(update, context)
+    elif action == "deleting":
+        await handle_delete_delivery_choice(update, context)
+    else:
+        await update.message.reply_text("❓ يرجى اختيار خيار من القائمة أولاً.")
 
 
 
@@ -1889,8 +1901,8 @@ async def run_bot():
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex("🚚 الدليفري"), handle_delivery_menu))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex("➕ إضافة دليفري"), ask_add_delivery_name))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex("❌ حذف دليفري"), handle_delete_delivery_menu))
-    app.add_handler(MessageHandler(filters.TEXT & filters.Regex("^(?!➕ إضافة دليفري|❌ حذف دليفري|🚚 الدليفري).+"), handle_delete_delivery_choice))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_add_delivery)) 
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unified_delivery_router))
+ 
 
 
     # ✅ أوامر الإحصائيات

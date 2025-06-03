@@ -807,6 +807,17 @@ async def button(update: Update, context: CallbackContext):
                 logger.error(f"❌ فشل في تعديل الأزرار (accept): {e}")
             return
 
+        elif action == "reject":
+            try:
+                await query.edit_message_reply_markup(
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("⚠️ تأكيد الرفض", callback_data=f"confirmreject_{order_id}")],
+                        [InlineKeyboardButton("🔙 رجوع", callback_data=f"back_{order_id}")]
+                    ])
+                )
+            except TelegramError as e:
+                logger.error(f"❌ فشل في عرض أزرار تأكيد الرفض: {e}")
+
         elif action == "confirmreject":
             try:
                 await context.bot.edit_message_reply_markup(
@@ -1895,7 +1906,7 @@ async def run_bot():
 
     # ✅ أزرار التفاعل
     app.add_handler(CallbackQueryHandler(button, pattern=r"^(accept|reject|confirmreject|back|complain|report_(delivery|phone|location|other))_.+"))
-    app.add_handler(CallbackQueryHandler(handle_time_selection, pattern=r"^time_\d+_.+"))
+    app.add_handler(CallbackQueryHandler(handle_time_selection, pattern=r"^time_\d+\+?_.+"))
 
    # ✅ إدارة الدليفري
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex("🚚 الدليفري"), handle_delivery_menu))

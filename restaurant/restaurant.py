@@ -24,7 +24,7 @@ from telegram.error import NetworkError
 order_rate_lock = Lock()
 last_order_time = 0  # بالثواني
 
-
+location_queue = deque()
 
 async def track_sent_message(message_id, order_id, source, destination, content):
     """تتبع الرسائل المرسلة في قاعدة البيانات"""
@@ -640,7 +640,7 @@ async def handle_channel_order(update: Update, context: CallbackContext):
 
     # 🔒 منع التداخل عند معالجة الطلب نفسه
     async with lock:
-        location = pending_locations.pop("last_location", None)
+        location = location_queue.popleft() if location_queue else None
         message_text = text + ("\n\n📍 *تم إرفاق الموقع الجغرافي*" if location else "")
 
         keyboard = [
@@ -725,7 +725,7 @@ async def handle_channel_location(update: Update, context: CallbackContext):
     logger.info(f"📍 تم استلام موقع: {latitude}, {longitude}")
 
     # حفظ الموقع مؤقتًا في القاموس
-    pending_locations["last_location"] = (latitude, longitude)
+    location_queue.append((latitude, longitude))
 
     # الحصول على آخر طلب غير مُعالَج
     last_order_id = max(pending_orders.keys(), default=None)
@@ -831,6 +831,37 @@ async def button(update: Update, context: CallbackContext):
                 await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(keyboard))
                 return
 
+            elif action.startswith("time"):
+                selected_time = action.replace("time_", "")
+                order_info["selected_time"] = selected_time
+                logger.info(f"⏱️ تم اختيار وقت التوصيل: {selected_time} دقيقة")
+
+                time_options = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 60, 75, 90]
+                keyboard = []
+
+                for t in time_options:
+                    label = f"{t} دقيقة"
+                    if str(t) == selected_time:
+                        label = f"✅ {label}"
+                    keyboard.append([InlineKeyboardButton(label, callback_data=f"time_{t}_{order_id}")])
+
+                if selected_time == "90+":
+                    keyboard.append([InlineKeyboardButton("✅ 📌 أكثر من 90 دقيقة", callback_data=f"time_90+_{order_id}")])
+                else:
+                    keyboard.append([InlineKeyboardButton("📌 أكثر من 90 دقيقة", callback_data=f"time_90+_{order_id}")])
+
+                keyboard.append([InlineKeyboardButton("🚗 جاهز ليطلع", callback_data=f"ready_{order_id}")])
+                keyboard.append([InlineKeyboardButton("🚨 شكوى عن الزبون أو الطلب", callback_data=f"complain_{order_id}")])
+                await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(keyboard))
+
+                confirm_text = (
+                    f"✅ تم قبول الطلب\n\n"
+                    f"🔢 رقم الطلب: {extract_order_number(order_details)}\n"
+                    f"🆔 معرف الطلب: {order_id}\n\n"
+                    f"⏱️ وقت التوصيل المتوقع: {selected_time} دقيقة"
+                )
+                await context.bot.send_message(chat_id=CASHIER_CHAT_ID, text=confirm_text)
+
             elif action == "reject":
                 logger.info("❌ تم اختيار 'رفض الطلب'، عرض أزرار التأكيد.")
                 await query.edit_message_reply_markup(
@@ -841,7 +872,7 @@ async def button(update: Update, context: CallbackContext):
                 )
 
             elif action == "confirmreject":
-                logger.info("❌ تأكيد رفض الطلب، يتم إرسال إشعار إلى القناة.")
+                logger.info("❌ تأكيد رفض الطلب.")
                 await query.edit_message_reply_markup(reply_markup=None)
                 reject_message = create_order_rejected_message(
                     order_id=order_id,
@@ -858,11 +889,9 @@ async def button(update: Update, context: CallbackContext):
                     message_id=message_id_out,
                     parse_mode="Markdown"
                 )
-                logger.info(f"📢 تم إرسال إشعار رفض الطلب: {order_id}")
-                
 
             elif action == "back":
-                logger.info("🔙 تم الضغط على زر الرجوع، عرض الأزرار الرئيسية.")
+                logger.info("🔙 عرض الأزرار الرئيسية من جديد.")
                 await query.edit_message_reply_markup(
                     reply_markup=InlineKeyboardMarkup([
                         [InlineKeyboardButton("✅ قبول الطلب", callback_data=f"accept_{order_id}")],
@@ -871,8 +900,68 @@ async def button(update: Update, context: CallbackContext):
                     ])
                 )
 
+            elif action == "ready":
+                logger.info("🚗 تم الضغط على زر 'جاهز ليطلع'، يتم عرض قائمة الديليفري.")
+
+                # جلب قائمة الديليفري من قاعدة البيانات
+                delivery_persons = await get_all_delivery_persons()  # دالة يجب أن تُعرف مسبقًا
+
+                if not delivery_persons:
+                    await query.answer("⚠️ لا يوجد دليفري مسجل حالياً.", show_alert=True)
+                    return
+
+                keyboard = []
+                for dp in delivery_persons:
+                    name, phone = dp["name"], dp["phone"]
+                    button_text = f"{name} ({phone})"
+                    callback_data = f"select_delivery_{order_id}_{name}_{phone}"
+                    keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
+
+                keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data=f"time_{order_info.get('selected_time', '0')}_{order_id}")])
+                await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(keyboard))
+
+            elif action == "select" and parts[1] == "delivery":
+                order_id = parts[2]
+                delivery_name = parts[3]
+                delivery_phone = parts[4]
+
+                logger.info(f"✅ تم اختيار دليفري: {delivery_name} ({delivery_phone})")
+
+                # إلغاء الأزرار
+                await query.edit_message_reply_markup(reply_markup=None)
+
+                # نص الإشعار
+                confirm_text = (
+                    f"🚗 *الطلب أصبح جاهزًا للتوصيل!*\n"
+                    f"🧑‍💼 *الدليفري:* {delivery_name} ({delivery_phone})\n"
+                    f"🆔 *معرف الطلب:* `{order_id}`"
+                )
+
+                message_id_1 = str(uuid.uuid4())
+                await track_sent_message(message_id_1, order_id, "restaurant_bot", "cashier", confirm_text)
+                await send_message_with_retry(
+                    bot=context.bot,
+                    chat_id=CASHIER_CHAT_ID,
+                    text=confirm_text,
+                    order_id=order_id,
+                    message_id=message_id_1,
+                    parse_mode="Markdown"
+                )
+
+                message_id_2 = str(uuid.uuid4())
+                await track_sent_message(message_id_2, order_id, "restaurant_bot", "channel", confirm_text)
+                await send_message_with_retry(
+                    bot=context.bot,
+                    chat_id=CHANNEL_ID,
+                    text=confirm_text,
+                    order_id=order_id,
+                    message_id=message_id_2,
+                    parse_mode="Markdown"
+                )
+
+
             elif action == "complain":
-                logger.info("🚨 تم فتح قائمة الشكاوى.")
+                logger.info("🚨 عرض قائمة الشكاوى.")
                 await query.edit_message_reply_markup(
                     reply_markup=InlineKeyboardMarkup([
                         [InlineKeyboardButton("🚪 وصل الديليفري ولم يجد الزبون", callback_data=f"report_delivery_{order_id}")],
@@ -891,7 +980,7 @@ async def button(update: Update, context: CallbackContext):
                     "report_other": "❓ شكوى أخرى من الكاشير"
                 }
                 reason_text = reason_map.get(report_type, "شكوى غير معروفة")
-                logger.info(f"📣 إرسال شكوى من النوع: {reason_text}")
+                logger.info(f"📣 إرسال شكوى: {reason_text}")
 
                 complaint_text = (
                     f"📣 *شكوى من الكاشير على الطلب:*\n"
@@ -899,7 +988,6 @@ async def button(update: Update, context: CallbackContext):
                     f"📍 السبب: {reason_text}\n\n"
                     f"📝 *تفاصيل الطلب:*\n\n{order_details}"
                 )
-
                 message_id_1 = str(uuid.uuid4())
                 await track_sent_message(message_id_1, order_id, "restaurant_bot", "complaints_channel", complaint_text)
                 await send_message_with_retry(
@@ -940,8 +1028,6 @@ async def button(update: Update, context: CallbackContext):
                     message_id=message_id_3
                 )
 
-                logger.info(f"✅ تم إرسال الشكوى ومعالجة الطلب بالكامل: {order_id}")
-                
     except Exception as e:
         logger.exception(f"❌ استثناء غير متوقع في button handler: {e}")
 
@@ -970,8 +1056,28 @@ async def handle_time_selection(update: Update, context: CallbackContext):
         order_number = extract_order_number(order_details)
 
         try:
-            # إزالة الأزرار
-            await query.edit_message_reply_markup(reply_markup=None)
+            # ✅ توليد أزرار الوقت مع تمييز المختار
+            time_options = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 60, 75, 90]
+            keyboard = []
+            for t in time_options:
+                label = f"{t} دقيقة"
+                if str(t) == time_selected:
+                    label = f"✅ {label}"
+                keyboard.append([InlineKeyboardButton(label, callback_data=f"time_{t}_{order_id}")])
+
+            # الزر الأخير
+            if time_selected == "90+":
+                keyboard.append([InlineKeyboardButton("✅ 📌 أكثر من 90 دقيقة", callback_data=f"time_90+_{order_id}")])
+            else:
+                keyboard.append([InlineKeyboardButton("📌 أكثر من 90 دقيقة", callback_data=f"time_90+_{order_id}")])
+
+            # زر جاهز للتوصيل
+            keyboard.append([InlineKeyboardButton("🚗 جاهز ليطلع", callback_data=f"ready_{order_id}")])
+
+            # زر الشكوى
+            keyboard.append([InlineKeyboardButton("🚨 شكوى عن الزبون أو الطلب", callback_data=f"complain_{order_id}")])
+
+            await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(keyboard))
 
             # إرسال إشعار القبول للمستخدم
             accept_message = create_order_accepted_message(order_id, order_number, time_selected)
@@ -988,7 +1094,7 @@ async def handle_time_selection(update: Update, context: CallbackContext):
             )
 
             # إرسال تأكيد القبول للكاشير
-            confirm_text = f"✅ تم قبول الطلب وإبلاغ المستخدم بوقت التوصيل: {time_selected} دقيقة."
+            confirm_text = f"✅ تم قبول الطلب\n\n🔢 رقم الطلب: {order_number}\n🆔 معرف الطلب: {order_id}\n\n⏱️ وقت التوصيل المتوقع: {time_selected} دقيقة"
             message_id_cashier = str(uuid.uuid4())
             await track_sent_message(message_id_cashier, order_id, "restaurant_bot", "cashier", confirm_text)
             await send_message_with_retry(
@@ -1003,9 +1109,6 @@ async def handle_time_selection(update: Update, context: CallbackContext):
 
         except Exception as e:
             logger.error(f"❌ فشل في إرسال إشعار القبول: {e}")
-
-       
-
 
 
 
@@ -1891,6 +1994,8 @@ async def run_bot():
     # ✅ أزرار التفاعل
     app.add_handler(CallbackQueryHandler(button, pattern=r"^(accept|reject|confirmreject|back|complain|report_(delivery|phone|location|other))_.+"))
     app.add_handler(CallbackQueryHandler(handle_time_selection, pattern=r"^time_\d+\+?_.+"))
+    app.add_handler(CallbackQueryHandler(button, pattern=r"^select_delivery_.+_.+_.+"))
+
 
    # ✅ إدارة الدليفري
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex("🚚 الدليفري"), handle_delivery_menu))

@@ -687,10 +687,7 @@ async def handle_channel_order(update: Update, context: CallbackContext):
     
         except Exception as e:
             logger.error(f"❌ خطأ أثناء إرسال الطلب إلى الكاشير: {e}")
-        finally:
-            pending_orders.pop(order_id, None)
-
-
+       
 
 async def handle_channel_location(update: Update, context: CallbackContext):
     message = update.channel_post
@@ -839,7 +836,7 @@ async def button(update: Update, context: CallbackContext):
                     parse_mode="Markdown"
                 )
                 logger.info(f"📢 تم إرسال إشعار رفض الطلب: {order_id}")
-                pending_orders.pop(order_id, None)
+                
 
             elif action == "back":
                 logger.info("🔙 تم الضغط على زر الرجوع، عرض الأزرار الرئيسية.")
@@ -921,8 +918,7 @@ async def button(update: Update, context: CallbackContext):
                 )
 
                 logger.info(f"✅ تم إرسال الشكوى ومعالجة الطلب بالكامل: {order_id}")
-                pending_orders.pop(order_id, None)
-
+                
     except Exception as e:
         logger.exception(f"❌ استثناء غير متوقع في button handler: {e}")
 
@@ -985,9 +981,7 @@ async def handle_time_selection(update: Update, context: CallbackContext):
         except Exception as e:
             logger.error(f"❌ فشل في إرسال إشعار القبول: {e}")
 
-        finally:
-            # 🧹 تنظيف الطلب
-            pending_orders.pop(order_id, None)
+       
 
 
 
@@ -1144,10 +1138,7 @@ async def handle_rating_feedback(update: Update, context: CallbackContext):
                 logger.info(f"✅ تم إزالة الأزرار من رسالة الطلب رقم: {order_number}")
             except Exception as e:
                 logger.error(f"❌ فشل في إزالة الأزرار: {e}")
-            finally:
-                pending_orders.pop(order_id, None)  # 🧹 تنظيف الطلب بعد التقييم
-            break
-
+           
 
 
 
@@ -1221,9 +1212,7 @@ async def handle_order_delivered_rating(update: Update, context: CallbackContext
 
     except Exception as e:
         logger.error(f"❌ خطأ أثناء إزالة الأزرار أو إرسال إشعار: {e}")
-    finally:
-        pending_orders.pop(order_id, None)
-
+    
 
 
 async def handle_report_cancellation_notice(update: Update, context: CallbackContext):
@@ -1297,9 +1286,7 @@ async def handle_report_cancellation_notice(update: Update, context: CallbackCon
     except Exception as e:
         logger.error(f"❌ خطأ أثناء معالجة إلغاء مع تقرير: {e}")
 
-    finally:
-        pending_orders.pop(order_id, None)
-
+   
 
 
 # ✅ استلام إلغاء الطلب من الزبون (إلغاء عادي أو بسبب التأخر)
@@ -1370,9 +1357,7 @@ async def handle_standard_cancellation_notice(update: Update, context: CallbackC
     except Exception as e:
         logger.error(f"❌ خطأ أثناء إرسال إشعار إلغاء الطلب: {e}")
 
-    finally:
-        # 🧹 تنظيف الطلب من الذاكرة المؤقتة
-        pending_orders.pop(order_id, None)
+    
 
 
 

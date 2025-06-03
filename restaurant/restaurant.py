@@ -624,15 +624,15 @@ async def handle_channel_order(update: Update, context: CallbackContext):
 
     logger.info(f"🔍 تم استخراج معرف الطلب: {order_id} | رقم الطلب: {order_number or 'غير معروف'}")
 
-        global last_order_time
-        async with order_rate_lock:
-            now = time.time()
-            elapsed = now - last_order_time
-            if elapsed < 0.2:
-                wait_time = 0.2 - elapsed
-                logger.debug(f"⏳ انتظار {wait_time:.3f} ثانية لحماية الترتيب.")
-                await asyncio.sleep(wait_time)
-            last_order_time = time.time()
+    global last_order_time
+    async with order_rate_lock:
+        now = time.time()
+        elapsed = now - last_order_time
+        if elapsed < 0.2:
+            wait_time = 0.2 - elapsed
+            logger.debug(f"⏳ انتظار {wait_time:.3f} ثانية لحماية الترتيب.")
+            await asyncio.sleep(wait_time)
+        last_order_time = time.time()
 
 
     # 🔐 الحصول على قفل تزامن خاص بهذا الطلب

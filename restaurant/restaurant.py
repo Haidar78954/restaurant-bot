@@ -820,11 +820,7 @@ async def button(update: Update, context: CallbackContext):
 
         elif action == "confirmreject":
             try:
-                await context.bot.edit_message_reply_markup(
-                    chat_id=CASHIER_CHAT_ID,
-                    message_id=message_id,
-                    reply_markup=None
-                )
+                await query.edit_message_reply_markup(reply_markup=None)
 
                 reject_message = create_order_rejected_message(
                     order_id=order_id,
@@ -921,11 +917,7 @@ async def button(update: Update, context: CallbackContext):
                     parse_mode="Markdown"
                 )
 
-                await context.bot.edit_message_reply_markup(
-                    chat_id=CASHIER_CHAT_ID,
-                    message_id=message_id,
-                    reply_markup=None
-                )
+                await query.edit_message_reply_markup(reply_markup=None)
 
                 confirmation_text = "📨 تم إرسال الشكوى وإلغاء الطلب. سيتواصل معكم فريق الدعم إذا لزم الأمر."
                 message_id_3 = str(uuid.uuid4())
@@ -944,6 +936,7 @@ async def button(update: Update, context: CallbackContext):
                 logger.error(f"❌ خطأ أثناء إرسال الشكوى: {e}")
             finally:
                 pending_orders.pop(order_id, None)
+
 
 
 
@@ -972,11 +965,7 @@ async def handle_time_selection(update: Update, context: CallbackContext):
 
         try:
             # إزالة الأزرار
-            await context.bot.edit_message_reply_markup(
-                chat_id=CASHIER_CHAT_ID,
-                message_id=message_id,
-                reply_markup=None
-            )
+            await query.edit_message_reply_markup(reply_markup=None)
 
             # إرسال إشعار القبول للمستخدم
             accept_message = create_order_accepted_message(order_id, order_number, time_selected)

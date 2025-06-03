@@ -767,70 +767,69 @@ async def handle_channel_location(update: Update, context: CallbackContext):
 
 async def button(update: Update, context: CallbackContext):
     query = update.callback_query
+    data = query.data
+    logger.info(f"📩 تم الضغط على زر: {data}")
+
     await query.answer()
 
-    data = query.data.split("_")
-    if len(data) < 2:
-        return
-
-    action = data[0]
-
-    if action == "report":
-        report_type = f"{data[0]}_{data[1]}"
-        order_id = "_".join(data[2:])
-    else:
-        report_type = None
-        order_id = "_".join(data[1:])
-
-    if order_id not in pending_orders:
-        await query.answer("⚠️ هذا الطلب لم يعد متاحًا.", show_alert=True)
-        return
-
-    lock = await get_order_lock(order_id)
-
-    async with lock:
-        order_info = pending_orders[order_id]
-        message_id = order_info.get("message_id")
-        order_details = order_info.get("order_details", "")
-
-        if action == "accept":
-            keyboard = [
-                [InlineKeyboardButton(f"{t} دقيقة", callback_data=f"time_{t}_{order_id}")]
-                for t in [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 60, 75, 90]
-            ]
-            keyboard.append([InlineKeyboardButton("📌 أكثر من 90 دقيقة", callback_data=f"time_90+_{order_id}")])
-            keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data=f"back_{order_id}")])
-
-            try:
-                await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(keyboard))
-            except TelegramError as e:
-                logger.error(f"❌ فشل في تعديل الأزرار (accept): {e}")
+    try:
+        parts = data.split("_")
+        if len(parts) < 2:
+            logger.warning("⚠️ البيانات غير صالحة داخل callback_data.")
             return
 
-        elif action == "reject":
-            try:
+        action = parts[0]
+        if action == "report":
+            report_type = f"{parts[0]}_{parts[1]}"
+            order_id = "_".join(parts[2:])
+        else:
+            report_type = None
+            order_id = "_".join(parts[1:])
+
+        logger.debug(f"🔍 تم تحليل callback_data: action={action}, order_id={order_id}, report_type={report_type}")
+
+        if order_id not in pending_orders:
+            logger.warning(f"⚠️ الطلب غير موجود ضمن pending_orders: {order_id}")
+            await query.answer("⚠️ هذا الطلب لم يعد متاحًا.", show_alert=True)
+            return
+
+        lock = await get_order_lock(order_id)
+        async with lock:
+            order_info = pending_orders[order_id]
+            message_id = order_info.get("message_id")
+            order_details = order_info.get("order_details", "")
+            logger.debug(f"🔐 جاري تنفيذ الإجراء على الطلب: {order_id}")
+
+            if action == "accept":
+                logger.info("✅ تم اختيار 'قبول الطلب'، يتم عرض أزرار الوقت.")
+                keyboard = [
+                    [InlineKeyboardButton(f"{t} دقيقة", callback_data=f"time_{t}_{order_id}")]
+                    for t in [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 60, 75, 90]
+                ]
+                keyboard.append([InlineKeyboardButton("📌 أكثر من 90 دقيقة", callback_data=f"time_90+_{order_id}")])
+                keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data=f"back_{order_id}")])
+                await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(keyboard))
+                return
+
+            elif action == "reject":
+                logger.info("❌ تم اختيار 'رفض الطلب'، عرض أزرار التأكيد.")
                 await query.edit_message_reply_markup(
                     reply_markup=InlineKeyboardMarkup([
                         [InlineKeyboardButton("⚠️ تأكيد الرفض", callback_data=f"confirmreject_{order_id}")],
                         [InlineKeyboardButton("🔙 رجوع", callback_data=f"back_{order_id}")]
                     ])
                 )
-            except TelegramError as e:
-                logger.error(f"❌ فشل في عرض أزرار تأكيد الرفض: {e}")
 
-        elif action == "confirmreject":
-            try:
+            elif action == "confirmreject":
+                logger.info("❌ تأكيد رفض الطلب، يتم إرسال إشعار إلى القناة.")
                 await query.edit_message_reply_markup(reply_markup=None)
-
                 reject_message = create_order_rejected_message(
                     order_id=order_id,
                     order_number=extract_order_number(order_details),
                     reason="قد تكون معلومات المستخدم غير مكتملة أو غير واضحة."
                 )
-
                 message_id_out = str(uuid.uuid4())
                 await track_sent_message(message_id_out, order_id, "restaurant_bot", "channel", reject_message)
-
                 await send_message_with_retry(
                     bot=context.bot,
                     chat_id=CHANNEL_ID,
@@ -839,16 +838,11 @@ async def button(update: Update, context: CallbackContext):
                     message_id=message_id_out,
                     parse_mode="Markdown"
                 )
-
-                logger.info(f"✅ تم رفض الطلب وإبلاغ المستخدم. (order_id={order_id})")
-
-            except TelegramError as e:
-                logger.error(f"❌ فشل في إرسال إشعار رفض الطلب: {e}")
-            finally:
+                logger.info(f"📢 تم إرسال إشعار رفض الطلب: {order_id}")
                 pending_orders.pop(order_id, None)
 
-        elif action == "back":
-            try:
+            elif action == "back":
+                logger.info("🔙 تم الضغط على زر الرجوع، عرض الأزرار الرئيسية.")
                 await query.edit_message_reply_markup(
                     reply_markup=InlineKeyboardMarkup([
                         [InlineKeyboardButton("✅ قبول الطلب", callback_data=f"accept_{order_id}")],
@@ -856,11 +850,9 @@ async def button(update: Update, context: CallbackContext):
                         [InlineKeyboardButton("🚨 شكوى عن الزبون أو الطلب", callback_data=f"complain_{order_id}")]
                     ])
                 )
-            except TelegramError as e:
-                logger.error(f"❌ فشل في عرض أزرار الرجوع: {e}")
 
-        elif action == "complain":
-            try:
+            elif action == "complain":
+                logger.info("🚨 تم فتح قائمة الشكاوى.")
                 await query.edit_message_reply_markup(
                     reply_markup=InlineKeyboardMarkup([
                         [InlineKeyboardButton("🚪 وصل الديليفري ولم يجد الزبون", callback_data=f"report_delivery_{order_id}")],
@@ -870,26 +862,24 @@ async def button(update: Update, context: CallbackContext):
                         [InlineKeyboardButton("🔙 رجوع", callback_data=f"back_{order_id}")]
                     ])
                 )
-            except TelegramError as e:
-                logger.error(f"❌ فشل في عرض أزرار الشكاوى: {e}")
 
-        elif report_type:
-            reason_map = {
-                "report_delivery": "🚪 وصل الديليفري ولم يجد الزبون",
-                "report_phone": "📞 رقم الهاتف غير صحيح",
-                "report_location": "📍 معلومات الموقع غير دقيقة",
-                "report_other": "❓ شكوى أخرى من الكاشير"
-            }
+            elif report_type:
+                reason_map = {
+                    "report_delivery": "🚪 وصل الديليفري ولم يجد الزبون",
+                    "report_phone": "📞 رقم الهاتف غير صحيح",
+                    "report_location": "📍 معلومات الموقع غير دقيقة",
+                    "report_other": "❓ شكوى أخرى من الكاشير"
+                }
+                reason_text = reason_map.get(report_type, "شكوى غير معروفة")
+                logger.info(f"📣 إرسال شكوى من النوع: {reason_text}")
 
-            reason_text = reason_map.get(report_type, "شكوى غير معروفة")
-
-            try:
                 complaint_text = (
                     f"📣 *شكوى من الكاشير على الطلب:*\n"
                     f"📌 معرف الطلب: `{order_id}`\n"
                     f"📍 السبب: {reason_text}\n\n"
                     f"📝 *تفاصيل الطلب:*\n\n{order_details}"
                 )
+
                 message_id_1 = str(uuid.uuid4())
                 await track_sent_message(message_id_1, order_id, "restaurant_bot", "complaints_channel", complaint_text)
                 await send_message_with_retry(
@@ -930,14 +920,11 @@ async def button(update: Update, context: CallbackContext):
                     message_id=message_id_3
                 )
 
-                logger.info(f"✅ تم إرسال شكوى بنجاح وتم تنظيف الطلب: {order_id}")
-
-            except TelegramError as e:
-                logger.error(f"❌ خطأ أثناء إرسال الشكوى: {e}")
-            finally:
+                logger.info(f"✅ تم إرسال الشكوى ومعالجة الطلب بالكامل: {order_id}")
                 pending_orders.pop(order_id, None)
 
-
+    except Exception as e:
+        logger.exception(f"❌ استثناء غير متوقع في button handler: {e}")
 
 
 

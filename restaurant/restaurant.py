@@ -197,6 +197,7 @@ async def initialize_database():
         cursor.execute(f"USE {DB_NAME}")
 
         # إنشاء جدول الطلبات
+                # إنشاء جدول الطلبات
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS orders (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -204,9 +205,12 @@ async def initialize_database():
                 order_number INT,
                 restaurant VARCHAR(255),
                 total_price INT,
-                timestamp DATETIME
+                timestamp DATETIME,
+                latitude DOUBLE,
+                longitude DOUBLE
             )
         """)
+
 
         # إنشاء جدول الدليفري
         cursor.execute("""
@@ -702,6 +706,10 @@ async def handle_channel_order(update: Update, context: CallbackContext):
         except Exception as e:
             logger.error(f"❌ خطأ أثناء إرسال الطلب إلى الكاشير: {e}")
        
+
+
+
+location_rate_lock = asyncio.Lock()
 
 async def handle_channel_location(update: Update, context: CallbackContext):
     global last_location_time

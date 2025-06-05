@@ -810,7 +810,12 @@ async def button(update: Update, context: CallbackContext):
                 return
 
             logger.info(f"✅ تم اختيار دليفري: {delivery_name} ({delivery_phone})")
-            await query.edit_message_reply_markup(reply_markup=None)
+            await query.edit_message_reply_markup(
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🚨 شكوى عن الزبون أو الطلب", callback_data=f"complain_{order_id}")]
+                ])
+            )
+
 
             confirm_text = (
                 f"🚗 *الطلب أصبح جاهزًا للتوصيل!*\n"

@@ -1110,6 +1110,17 @@ async def handle_time_selection(update: Update, context: CallbackContext):
         except Exception as e:
             logger.error(f"❌ فشل في إرسال إشعار القبول: {e}")
 
+async def get_all_delivery_persons():
+    """🔍 جلب جميع أسماء وأرقام الدليفري من قاعدة البيانات"""
+    try:
+        async with get_db_connection() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute("SELECT name, phone FROM delivery_persons")
+                rows = await cursor.fetchall()
+                return [{"name": row[0], "phone": row[1]} for row in rows]
+    except Exception as e:
+        logger.error(f"❌ خطأ أثناء جلب قائمة الدليفري: {e}")
+        return []
 
 
 

@@ -599,6 +599,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ✅ استقبال طلب من القناة
+# ✅ استقبال طلب من القناة
 async def handle_channel_order(update: Update, context: CallbackContext):
     message = update.channel_post
 
@@ -638,13 +639,24 @@ async def handle_channel_order(update: Update, context: CallbackContext):
             await asyncio.sleep(wait_time)
         last_order_time = time.time()
 
-
     # 🔐 الحصول على قفل تزامن خاص بهذا الطلب
     lock = await get_order_lock(order_id)
 
     # 🔒 منع التداخل عند معالجة الطلب نفسه
     async with lock:
-        location = location_queue.popleft() if location_queue else None
+        # 👇 تعديل هنا: انتظار وصول الموقع لمدة 2 ثانية
+        location = None
+        wait_time = 2  # انتظار ثانيتين كحد أقصى
+        wait_interval = 0.2  # فحص كل 0.2 ثانية
+        
+        # انتظار وصول الموقع
+        for _ in range(int(wait_time / wait_interval)):
+            if location_queue:
+                location = location_queue.popleft()
+                logger.info(f"✅ تم استلام الموقع للطلب: {order_id}")
+                break
+            await asyncio.sleep(wait_interval)
+        
         message_text = text + ("\n\n📍 *تم إرفاق الموقع الجغرافي*" if location else "")
 
         keyboard = [
@@ -655,6 +667,16 @@ async def handle_channel_order(update: Update, context: CallbackContext):
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         try:
+            # 👇 تعديل هنا: إرسال الموقع أولاً (إن وُجد)
+            if location:
+                latitude, longitude = location
+                await context.bot.send_location(
+                    chat_id=CASHIER_CHAT_ID,
+                    latitude=latitude,
+                    longitude=longitude
+                )
+                logger.info(f"✅ تم إرسال الموقع للكاشير (order_id={order_id})")
+            
             # 1. بناء النص
             text_to_send = f"🆕 *طلب جديد من القناة:*\n\n{message_text}\n\n📌 *معرف الطلب:* `{order_id}`"
     
@@ -669,16 +691,6 @@ async def handle_channel_order(update: Update, context: CallbackContext):
                 destination="cashier",
                 content=text_to_send
             )
-    
-            # 4. إرسال الموقع أولًا (إن وُجد)
-            if location:
-                latitude, longitude = location
-                await context.bot.send_location(
-                    chat_id=CASHIER_CHAT_ID,
-                    latitude=latitude,
-                    longitude=longitude
-                )
-                logger.info(f"✅ تم إرسال الموقع للكاشير (order_id={order_id})")
     
             # 5. إرسال الرسالة بعد الموقع
             sent_message = await send_message_with_retry(
@@ -705,14 +717,19 @@ async def handle_channel_order(update: Update, context: CallbackContext):
     
         except Exception as e:
             logger.error(f"❌ خطأ أثناء إرسال الطلب إلى الكاشير: {e}")
+
        
 
-
+# متغير عالمي لتخزين آخر موقع تم استلامه
+last_received_location = None
+last_location_time = 0
 
 location_rate_lock = asyncio.Lock()
 
+# ✅ تخزين الموقع فقط بدون إرسال
 async def handle_channel_location(update: Update, context: CallbackContext):
     global last_location_time
+
     async with location_rate_lock:
         now = time.time()
         elapsed = now - last_location_time
@@ -721,7 +738,9 @@ async def handle_channel_location(update: Update, context: CallbackContext):
             logger.debug(f"⏳ انتظار {wait_time:.3f} ثانية قبل معالجة الموقع.")
             await asyncio.sleep(wait_time)
         last_location_time = time.time()
+
     message = update.channel_post
+
     if not message or message.chat_id != CHANNEL_ID:
         return
 
@@ -732,65 +751,17 @@ async def handle_channel_location(update: Update, context: CallbackContext):
     longitude = message.location.longitude
     logger.info(f"📍 تم استلام موقع: {latitude}, {longitude}")
 
-    # حفظ الموقع مؤقتًا في القاموس
+    # ✅ حفظ الموقع في قائمة الانتظار
     location_queue.append((latitude, longitude))
 
-    # الحصول على آخر طلب غير مُعالَج
+    # ✅ حفظه مؤقتًا في الطلب الأخير إن وجد
     last_order_id = max(pending_orders.keys(), default=None)
-    if not last_order_id:
+    if last_order_id:
+        pending_orders[last_order_id]["location"] = (latitude, longitude)
+        logger.info(f"📍 تم ربط الموقع مؤقتًا بالطلب الأخير: {last_order_id}")
+    else:
         logger.warning("⚠️ لا يوجد طلبات حالية لربط الموقع بها.")
-        return
 
-    # إضافة الموقع إلى الطلب
-    pending_orders[last_order_id]["location"] = (latitude, longitude)
-    updated_order_text = f"{pending_orders[last_order_id]['order_details']}\n\n📍 *تم إرفاق الموقع الجغرافي*"
-
-    # أزرار التفاعل
-    keyboard = [
-        [InlineKeyboardButton("✅ قبول الطلب", callback_data=f"accept_{last_order_id}")],
-        [InlineKeyboardButton("❌ رفض الطلب", callback_data=f"reject_{last_order_id}")],
-        [InlineKeyboardButton("🚨 شكوى عن الزبون أو الطلب", callback_data=f"complain_{last_order_id}")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    try:
-        # 1. إرسال الموقع الجغرافي
-        await context.bot.send_location(
-            chat_id=CASHIER_CHAT_ID,
-            latitude=latitude,
-            longitude=longitude
-        )
-
-        # 2. تحضير نص الرسالة
-        text = f"🆕 *طلب جديد محدث من القناة:*\n\n{updated_order_text}\n\n📌 معرف الطلب: `{last_order_id}`"
-
-        # 3. توليد UUID لتتبع الرسالة
-        message_id = str(uuid.uuid4())
-
-        # 4. تسجيل الرسالة في جدول التتبع
-        await track_sent_message(
-            message_id=message_id,
-            order_id=last_order_id,
-            source="restaurant_bot",
-            destination="cashier",
-            content=text
-        )
-
-        # 5. إرسال الرسالة مع retry
-        await send_message_with_retry(
-            bot=context.bot,
-            chat_id=CASHIER_CHAT_ID,
-            text=text,
-            order_id=last_order_id,
-            message_id=message_id,
-            parse_mode="Markdown",
-            reply_markup=reply_markup
-        )
-
-        logger.info(f"✅ تم إرسال الطلب المحدث مع الموقع (order_id={last_order_id})")
-
-    except Exception as e:
-        logger.error(f"❌ خطأ أثناء إرسال الطلب المحدث: {e}")
 
 
 

@@ -932,8 +932,14 @@ async def button(update: Update, context: CallbackContext):
                     reason="قد تكون معلومات المستخدم غير مكتملة أو غير واضحة."
                 )
                 await send_message_with_retry(
-                    context.bot, CHANNEL_ID, reject_msg, order_id, str(uuid.uuid4()), parse_mode="Markdown"
+                    bot=context.bot,
+                    chat_id=CHANNEL_ID,
+                    text=reject_msg,
+                    order_id=order_id,
+                    message_id=str(uuid.uuid4()),
+                    parse_mode="Markdown"
                 )
+
 
             elif action == "back":
                 await query.edit_message_reply_markup(
@@ -983,8 +989,14 @@ async def button(update: Update, context: CallbackContext):
                     f"📝 *تفاصيل الطلب:*\n\n{order_details}"
                 )
                 await send_message_with_retry(
-                    context.bot, RESTAURANT_COMPLAINTS_CHAT_ID, complaint_text, order_id, str(uuid.uuid4()), parse_mode="Markdown"
+                    bot=context.bot,
+                    chat_id=RESTAURANT_COMPLAINTS_CHAT_ID,
+                    text=complaint_text,
+                    order_id=order_id,
+                    message_id=str(uuid.uuid4()),
+                    parse_mode="Markdown"
                 )
+
                 await query.edit_message_reply_markup(reply_markup=None)
                 await context.bot.send_message(
                     chat_id=CASHIER_CHAT_ID,

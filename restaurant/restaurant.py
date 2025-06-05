@@ -914,16 +914,20 @@ async def button(update: Update, context: CallbackContext):
                 for dp in delivery_persons:
                     name, phone = dp["name"], dp["phone"]
                     button_text = f"{name} ({phone})"
-                    callback_data = f"select_delivery_{order_id}_{name}_{phone}"
+                    callback_data = f"select_delivery|{order_id}|{name}|{phone}"
                     keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
 
                 keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data=f"time_{order_info.get('selected_time', '0')}_{order_id}")])
                 await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(keyboard))
 
-            elif action == "select" and parts[1] == "delivery":
-                order_id = parts[2]
-                delivery_name = parts[3]
-                delivery_phone = parts[4]
+            elif data.startswith("select_delivery|"):
+                parts = data.split("|")
+                if len(parts) != 4:
+                    logger.warning("⚠️ بيانات الدليفري غير صالحة.")
+                    return
+            
+                _, order_id, delivery_name, delivery_phone = parts
+
 
                 logger.info(f"✅ تم اختيار دليفري: {delivery_name} ({delivery_phone})")
 
@@ -1051,6 +1055,7 @@ async def handle_time_selection(update: Update, context: CallbackContext):
 
     async with lock:
         order_info = pending_orders[order_id]
+        current_time = order_info.get("selected_time")
         message_id = order_info.get("message_id")
         order_details = order_info.get("order_details", "")
         order_number = extract_order_number(order_details)
@@ -1059,27 +1064,32 @@ async def handle_time_selection(update: Update, context: CallbackContext):
             # ✅ توليد أزرار الوقت مع تمييز المختار
             time_options = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 60, 75, 90]
             keyboard = []
+
             for t in time_options:
                 label = f"{t} دقيقة"
                 if str(t) == time_selected:
                     label = f"✅ {label}"
                 keyboard.append([InlineKeyboardButton(label, callback_data=f"time_{t}_{order_id}")])
 
-            # الزر الأخير
             if time_selected == "90+":
                 keyboard.append([InlineKeyboardButton("✅ 📌 أكثر من 90 دقيقة", callback_data=f"time_90+_{order_id}")])
             else:
                 keyboard.append([InlineKeyboardButton("📌 أكثر من 90 دقيقة", callback_data=f"time_90+_{order_id}")])
 
-            # زر جاهز للتوصيل
             keyboard.append([InlineKeyboardButton("🚗 جاهز ليطلع", callback_data=f"ready_{order_id}")])
-
-            # زر الشكوى
             keyboard.append([InlineKeyboardButton("🚨 شكوى عن الزبون أو الطلب", callback_data=f"complain_{order_id}")])
 
             await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(keyboard))
 
-            # إرسال إشعار القبول للمستخدم
+            # ✅ إذا لم يتغير الوقت لا ترسل شيء جديد
+            if time_selected == current_time:
+                logger.info("🟡 تم اختيار نفس وقت التوصيل السابق. لا حاجة للإرسال.")
+                return
+
+            # ✅ حفظ الوقت الجديد
+            order_info["selected_time"] = time_selected
+
+            # إرسال إشعار القبول
             accept_message = create_order_accepted_message(order_id, order_number, time_selected)
 
             message_id_channel = str(uuid.uuid4())
@@ -1093,8 +1103,12 @@ async def handle_time_selection(update: Update, context: CallbackContext):
                 parse_mode="Markdown"
             )
 
-            # إرسال تأكيد القبول للكاشير
-            confirm_text = f"✅ تم قبول الطلب\n\n🔢 رقم الطلب: {order_number}\n🆔 معرف الطلب: {order_id}\n\n⏱️ وقت التوصيل المتوقع: {time_selected} دقيقة"
+            confirm_text = (
+                f"✅ تم قبول الطلب\n\n"
+                f"🔢 رقم الطلب: {order_number}\n"
+                f"🆔 معرف الطلب: {order_id}\n\n"
+                f"⏱️ وقت التوصيل المتوقع: {time_selected} دقيقة"
+            )
             message_id_cashier = str(uuid.uuid4())
             await track_sent_message(message_id_cashier, order_id, "restaurant_bot", "cashier", confirm_text)
             await send_message_with_retry(
@@ -1105,10 +1119,33 @@ async def handle_time_selection(update: Update, context: CallbackContext):
                 message_id=message_id_cashier
             )
 
-            logger.info(f"✅ تم قبول الطلب وإبلاغ المستخدم. (order_id={order_id}, time={time_selected})")
+            logger.info(f"✅ تم تحديث وقت الطلب: {time_selected} دقيقة (order_id={order_id})")
 
         except Exception as e:
             logger.error(f"❌ فشل في إرسال إشعار القبول: {e}")
+
+
+
+def generate_time_keyboard(order_id, selected_time):
+    time_options = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 60, 75, 90]
+    keyboard = []
+    for t in time_options:
+        label = f"{t} دقيقة"
+        if str(t) == selected_time:
+            label = f"✅ {label}"
+        keyboard.append([InlineKeyboardButton(label, callback_data=f"time_{t}_{order_id}")])
+
+    if selected_time == "90+":
+        keyboard.append([InlineKeyboardButton("✅ 📌 أكثر من 90 دقيقة", callback_data=f"time_90+_{order_id}")])
+    else:
+        keyboard.append([InlineKeyboardButton("📌 أكثر من 90 دقيقة", callback_data=f"time_90+_{order_id}")])
+
+    keyboard.append([InlineKeyboardButton("🚗 جاهز ليطلع", callback_data=f"ready_{order_id}")])
+    keyboard.append([InlineKeyboardButton("🚨 شكوى عن الزبون أو الطلب", callback_data=f"complain_{order_id}")])
+    return keyboard
+
+
+
 
 async def get_all_delivery_persons():
     """🔍 جلب جميع أسماء وأرقام الدليفري من قاعدة البيانات"""
@@ -2005,7 +2042,7 @@ async def run_bot():
     # ✅ أزرار التفاعل
     app.add_handler(CallbackQueryHandler(button, pattern=r"^(accept|reject|confirmreject|back|complain|ready|report_(delivery|phone|location|other))_.+"))
     app.add_handler(CallbackQueryHandler(handle_time_selection, pattern=r"^time_\d+\+?_.+"))
-    app.add_handler(CallbackQueryHandler(button, pattern=r"^select_delivery_.+_.+_.+"))
+    app.add_handler(CallbackQueryHandler(button, pattern=r"^select_delivery\|.+"))
 
 
    # ✅ إدارة الدليفري

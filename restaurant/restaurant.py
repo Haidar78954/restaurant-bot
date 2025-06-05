@@ -996,6 +996,15 @@ async def button(update: Update, context: CallbackContext):
                     message_id=str(uuid.uuid4()),
                     parse_mode="Markdown"
                 )
+                await send_message_with_retry(
+                    bot=context.bot,
+                    chat_id=CHANNEL_ID,
+                    text=complaint_text,
+                    order_id=order_id,
+                    message_id=str(uuid.uuid4()),
+                    parse_mode="Markdown"
+                )
+
 
                 await query.edit_message_reply_markup(reply_markup=None)
                 await context.bot.send_message(

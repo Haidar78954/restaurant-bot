@@ -785,6 +785,8 @@ async def handle_channel_location(update: Update, context: CallbackContext):
         logger.error(f"❌ خطأ أثناء إرسال الطلب المحدث: {e}")
 
 
+
+
 async def button(update: Update, context: CallbackContext):
     query = update.callback_query
     data = query.data
@@ -793,6 +795,53 @@ async def button(update: Update, context: CallbackContext):
     await query.answer()
 
     try:
+        # ✅ تحليل خاص لأزرار اختيار الدليفري
+        if data.startswith("select_delivery|"):
+            parts = data.split("|")
+            if len(parts) != 4:
+                logger.warning("⚠️ بيانات الدليفري غير صالحة.")
+                return
+
+            _, order_id, delivery_name, delivery_phone = parts
+
+            if order_id not in pending_orders:
+                logger.warning(f"⚠️ الطلب غير موجود ضمن pending_orders: {order_id}")
+                await query.answer("⚠️ الطلب لم يعد متاحاً.", show_alert=True)
+                return
+
+            logger.info(f"✅ تم اختيار دليفري: {delivery_name} ({delivery_phone})")
+            await query.edit_message_reply_markup(reply_markup=None)
+
+            confirm_text = (
+                f"🚗 *الطلب أصبح جاهزًا للتوصيل!*\n"
+                f"🧑‍💼 *الدليفري:* {delivery_name} ({delivery_phone})\n"
+                f"🆔 *معرف الطلب:* `{order_id}`"
+            )
+
+            message_id_1 = str(uuid.uuid4())
+            await track_sent_message(message_id_1, order_id, "restaurant_bot", "cashier", confirm_text)
+            await send_message_with_retry(
+                bot=context.bot,
+                chat_id=CASHIER_CHAT_ID,
+                text=confirm_text,
+                order_id=order_id,
+                message_id=message_id_1,
+                parse_mode="Markdown"
+            )
+
+            message_id_2 = str(uuid.uuid4())
+            await track_sent_message(message_id_2, order_id, "restaurant_bot", "channel", confirm_text)
+            await send_message_with_retry(
+                bot=context.bot,
+                chat_id=CHANNEL_ID,
+                text=confirm_text,
+                order_id=order_id,
+                message_id=message_id_2,
+                parse_mode="Markdown"
+            )
+            return  # 🛑 توقف هنا، لا تحلل باقي الزر
+
+        # ✅ تحليل الأزرار العادية (التي تستخدم "_")
         parts = data.split("_")
         if len(parts) < 2:
             logger.warning("⚠️ البيانات غير صالحة داخل callback_data.")
@@ -806,11 +855,11 @@ async def button(update: Update, context: CallbackContext):
             report_type = None
             order_id = "_".join(parts[1:])
 
-        logger.debug(f"🔍 تم تحليل callback_data: action={action}, order_id={order_id}, report_type={report_type}")
+        logger.debug(f"🔍 تحليل callback_data: action={action}, order_id={order_id}, report_type={report_type}")
 
         if order_id not in pending_orders:
             logger.warning(f"⚠️ الطلب غير موجود ضمن pending_orders: {order_id}")
-            await query.answer("⚠️ هذا الطلب لم يعد متاحًا.", show_alert=True)
+            await query.answer("⚠️ الطلب لم يعد متاحاً.", show_alert=True)
             return
 
         lock = await get_order_lock(order_id)
@@ -818,10 +867,10 @@ async def button(update: Update, context: CallbackContext):
             order_info = pending_orders[order_id]
             message_id = order_info.get("message_id")
             order_details = order_info.get("order_details", "")
-            logger.debug(f"🔐 جاري تنفيذ الإجراء على الطلب: {order_id}")
+            order_number = extract_order_number(order_details)
 
             if action == "accept":
-                logger.info("✅ تم اختيار 'قبول الطلب'، يتم عرض أزرار الوقت.")
+                logger.info("✅ قبول الطلب - عرض أزرار الوقت")
                 keyboard = [
                     [InlineKeyboardButton(f"{t} دقيقة", callback_data=f"time_{t}_{order_id}")]
                     for t in [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 60, 75, 90]
@@ -834,36 +883,35 @@ async def button(update: Update, context: CallbackContext):
             elif action.startswith("time"):
                 selected_time = action.replace("time_", "")
                 order_info["selected_time"] = selected_time
-                logger.info(f"⏱️ تم اختيار وقت التوصيل: {selected_time} دقيقة")
+                logger.info(f"⏱️ تم اختيار وقت التوصيل: {selected_time}")
 
+                # ✅ أزرار الوقت
                 time_options = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 60, 75, 90]
                 keyboard = []
-
                 for t in time_options:
                     label = f"{t} دقيقة"
                     if str(t) == selected_time:
                         label = f"✅ {label}"
                     keyboard.append([InlineKeyboardButton(label, callback_data=f"time_{t}_{order_id}")])
-
                 if selected_time == "90+":
                     keyboard.append([InlineKeyboardButton("✅ 📌 أكثر من 90 دقيقة", callback_data=f"time_90+_{order_id}")])
                 else:
                     keyboard.append([InlineKeyboardButton("📌 أكثر من 90 دقيقة", callback_data=f"time_90+_{order_id}")])
-
                 keyboard.append([InlineKeyboardButton("🚗 جاهز ليطلع", callback_data=f"ready_{order_id}")])
                 keyboard.append([InlineKeyboardButton("🚨 شكوى عن الزبون أو الطلب", callback_data=f"complain_{order_id}")])
+
                 await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(keyboard))
 
+                # رسالة التأكيد
                 confirm_text = (
                     f"✅ تم قبول الطلب\n\n"
-                    f"🔢 رقم الطلب: {extract_order_number(order_details)}\n"
+                    f"🔢 رقم الطلب: {order_number}\n"
                     f"🆔 معرف الطلب: {order_id}\n\n"
                     f"⏱️ وقت التوصيل المتوقع: {selected_time} دقيقة"
                 )
                 await context.bot.send_message(chat_id=CASHIER_CHAT_ID, text=confirm_text)
 
             elif action == "reject":
-                logger.info("❌ تم اختيار 'رفض الطلب'، عرض أزرار التأكيد.")
                 await query.edit_message_reply_markup(
                     reply_markup=InlineKeyboardMarkup([
                         [InlineKeyboardButton("⚠️ تأكيد الرفض", callback_data=f"confirmreject_{order_id}")],
@@ -872,26 +920,17 @@ async def button(update: Update, context: CallbackContext):
                 )
 
             elif action == "confirmreject":
-                logger.info("❌ تأكيد رفض الطلب.")
                 await query.edit_message_reply_markup(reply_markup=None)
-                reject_message = create_order_rejected_message(
+                reject_msg = create_order_rejected_message(
                     order_id=order_id,
-                    order_number=extract_order_number(order_details),
+                    order_number=order_number,
                     reason="قد تكون معلومات المستخدم غير مكتملة أو غير واضحة."
                 )
-                message_id_out = str(uuid.uuid4())
-                await track_sent_message(message_id_out, order_id, "restaurant_bot", "channel", reject_message)
                 await send_message_with_retry(
-                    bot=context.bot,
-                    chat_id=CHANNEL_ID,
-                    text=reject_message,
-                    order_id=order_id,
-                    message_id=message_id_out,
-                    parse_mode="Markdown"
+                    context.bot, CHANNEL_ID, reject_msg, order_id, str(uuid.uuid4()), parse_mode="Markdown"
                 )
 
             elif action == "back":
-                logger.info("🔙 عرض الأزرار الرئيسية من جديد.")
                 await query.edit_message_reply_markup(
                     reply_markup=InlineKeyboardMarkup([
                         [InlineKeyboardButton("✅ قبول الطلب", callback_data=f"accept_{order_id}")],
@@ -901,71 +940,19 @@ async def button(update: Update, context: CallbackContext):
                 )
 
             elif action == "ready":
-                logger.info("🚗 تم الضغط على زر 'جاهز ليطلع'، يتم عرض قائمة الديليفري.")
-
-                # جلب قائمة الديليفري من قاعدة البيانات
-                delivery_persons = await get_all_delivery_persons()  # دالة يجب أن تُعرف مسبقًا
-
+                delivery_persons = await get_all_delivery_persons()
                 if not delivery_persons:
                     await query.answer("⚠️ لا يوجد دليفري مسجل حالياً.", show_alert=True)
                     return
-
                 keyboard = []
                 for dp in delivery_persons:
                     name, phone = dp["name"], dp["phone"]
-                    button_text = f"{name} ({phone})"
                     callback_data = f"select_delivery|{order_id}|{name}|{phone}"
-                    keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
-
+                    keyboard.append([InlineKeyboardButton(f"{name} ({phone})", callback_data=callback_data)])
                 keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data=f"time_{order_info.get('selected_time', '0')}_{order_id}")])
                 await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(keyboard))
 
-            elif data.startswith("select_delivery|"):
-                parts = data.split("|")
-                if len(parts) != 4:
-                    logger.warning("⚠️ بيانات الدليفري غير صالحة.")
-                    return
-            
-                _, order_id, delivery_name, delivery_phone = parts
-
-
-                logger.info(f"✅ تم اختيار دليفري: {delivery_name} ({delivery_phone})")
-
-                # إلغاء الأزرار
-                await query.edit_message_reply_markup(reply_markup=None)
-
-                # نص الإشعار
-                confirm_text = (
-                    f"🚗 *الطلب أصبح جاهزًا للتوصيل!*\n"
-                    f"🧑‍💼 *الدليفري:* {delivery_name} ({delivery_phone})\n"
-                    f"🆔 *معرف الطلب:* `{order_id}`"
-                )
-
-                message_id_1 = str(uuid.uuid4())
-                await track_sent_message(message_id_1, order_id, "restaurant_bot", "cashier", confirm_text)
-                await send_message_with_retry(
-                    bot=context.bot,
-                    chat_id=CASHIER_CHAT_ID,
-                    text=confirm_text,
-                    order_id=order_id,
-                    message_id=message_id_1,
-                    parse_mode="Markdown"
-                )
-
-                message_id_2 = str(uuid.uuid4())
-                await track_sent_message(message_id_2, order_id, "restaurant_bot", "channel", confirm_text)
-                await send_message_with_retry(
-                    bot=context.bot,
-                    chat_id=CHANNEL_ID,
-                    text=confirm_text,
-                    order_id=order_id,
-                    message_id=message_id_2,
-                    parse_mode="Markdown"
-                )
-
-
             elif action == "complain":
-                logger.info("🚨 عرض قائمة الشكاوى.")
                 await query.edit_message_reply_markup(
                     reply_markup=InlineKeyboardMarkup([
                         [InlineKeyboardButton("🚪 وصل الديليفري ولم يجد الزبون", callback_data=f"report_delivery_{order_id}")],
@@ -984,52 +971,19 @@ async def button(update: Update, context: CallbackContext):
                     "report_other": "❓ شكوى أخرى من الكاشير"
                 }
                 reason_text = reason_map.get(report_type, "شكوى غير معروفة")
-                logger.info(f"📣 إرسال شكوى: {reason_text}")
-
                 complaint_text = (
                     f"📣 *شكوى من الكاشير على الطلب:*\n"
                     f"📌 معرف الطلب: `{order_id}`\n"
                     f"📍 السبب: {reason_text}\n\n"
                     f"📝 *تفاصيل الطلب:*\n\n{order_details}"
                 )
-                message_id_1 = str(uuid.uuid4())
-                await track_sent_message(message_id_1, order_id, "restaurant_bot", "complaints_channel", complaint_text)
                 await send_message_with_retry(
-                    context.bot,
-                    chat_id=RESTAURANT_COMPLAINTS_CHAT_ID,
-                    text=complaint_text,
-                    order_id=order_id,
-                    message_id=message_id_1,
-                    parse_mode="Markdown"
+                    context.bot, RESTAURANT_COMPLAINTS_CHAT_ID, complaint_text, order_id, str(uuid.uuid4()), parse_mode="Markdown"
                 )
-
-                cancel_text = (
-                    f"🚫 تم إلغاء الطلب بسبب شكوى الكاشير.\n"
-                    f"📌 معرف الطلب: `{order_id}`\n"
-                    f"📍 السبب: {reason_text}"
-                )
-                message_id_2 = str(uuid.uuid4())
-                await track_sent_message(message_id_2, order_id, "restaurant_bot", "channel", cancel_text)
-                await send_message_with_retry(
-                    context.bot,
-                    chat_id=CHANNEL_ID,
-                    text=cancel_text,
-                    order_id=order_id,
-                    message_id=message_id_2,
-                    parse_mode="Markdown"
-                )
-
                 await query.edit_message_reply_markup(reply_markup=None)
-
-                confirmation_text = "📨 تم إرسال الشكوى وإلغاء الطلب. سيتواصل معكم فريق الدعم إذا لزم الأمر."
-                message_id_3 = str(uuid.uuid4())
-                await track_sent_message(message_id_3, order_id, "restaurant_bot", "cashier", confirmation_text)
-                await send_message_with_retry(
-                    context.bot,
+                await context.bot.send_message(
                     chat_id=CASHIER_CHAT_ID,
-                    text=confirmation_text,
-                    order_id=order_id,
-                    message_id=message_id_3
+                    text="📨 تم إرسال الشكوى وإلغاء الطلب. سيتواصل معكم فريق الدعم إذا لزم الأمر."
                 )
 
     except Exception as e:

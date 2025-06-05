@@ -1992,7 +1992,7 @@ async def run_bot():
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.TEXT, handle_channel_order))
 
     # ✅ أزرار التفاعل
-    app.add_handler(CallbackQueryHandler(button, pattern=r"^(accept|reject|confirmreject|back|complain|report_(delivery|phone|location|other))_.+"))
+    app.add_handler(CallbackQueryHandler(button, pattern=r"^(accept|reject|confirmreject|back|complain|ready|report_(delivery|phone|location|other))_.+"))
     app.add_handler(CallbackQueryHandler(handle_time_selection, pattern=r"^time_\d+\+?_.+"))
     app.add_handler(CallbackQueryHandler(button, pattern=r"^select_delivery_.+_.+_.+"))
 

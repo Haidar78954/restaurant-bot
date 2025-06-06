@@ -1128,11 +1128,12 @@ async def get_all_delivery_persons():
 
 # 🔔 إعادة إرسال التذكير كما هو
 async def handle_channel_reminder(update: Update, context: CallbackContext):
-    logger.info(f"📡 تم استلام رسالة من القناة: chat_id={message.chat_id} | النص: {message.text}")
-
     message = update.channel_post
     if not message or message.chat_id != CHANNEL_ID:
         return
+
+    logger.info(f"📡 تم استلام رسالة من القناة: chat_id={message.chat_id} | النص: {message.text}")
+
 
     text = message.text or ""
     if "تذكير من الزبون" not in text:
@@ -1178,11 +1179,12 @@ async def handle_channel_reminder(update: Update, context: CallbackContext):
 
 # 🔔 إعادة إرسال التذكير بصيغة أخرى
 async def handle_reminder_message(update: Update, context: CallbackContext):
-    logger.info(f"📡 تم استلام رسالة من القناة: chat_id={message.chat_id} | النص: {message.text}")
 
     message = update.channel_post
     if not message or message.chat_id != CHANNEL_ID:
         return
+
+    logger.info(f"📡 تم استلام رسالة من القناة: chat_id={message.chat_id} | النص: {message.text}")
 
     if "تذكير من الزبون" in message.text:
         logger.info("📌 تم استلام تذكير من الزبون، إعادة توجيهه للكاشير...")

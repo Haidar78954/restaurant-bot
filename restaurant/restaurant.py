@@ -1939,8 +1939,10 @@ ORDER_ID_PATTERNS = [
 ORDER_NUMBER_PATTERNS = [
     r"رقم الطلب:?\s*[`\"']?(\d+)[`\"']?",
     r"🔢.*?[`\"']?(\d+)[`\"']?",
-    r"order_number:?\s*[`\"']?(\d+)[`\"']?"
+    r"order_number:?\s*[`\"']?(\d+)[`\"']?",
+    r"استلم طلبه رقم (\d+)"  # ✅ النمط الجديد
 ]
+
 
 def extract_order_id(text):
     for pattern in ORDER_ID_PATTERNS:

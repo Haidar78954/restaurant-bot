@@ -20,7 +20,7 @@ from telegram.ext import ContextTypes
 from telegram.request import HTTPXRequest
 from collections import deque
 from telegram.error import NetworkError
-from telegram.ext import ChannelPostHandler
+
 
 
 order_rate_lock = Lock()
@@ -1992,7 +1992,7 @@ async def run_bot():
     app.add_error_handler(handle_network_error)
 
     # ✅ رسائل التذكير
-    app.add_handler(ChannelPostHandler(handle_channel_post))
+    app.add_handler(MessageHandler(filters.ChatType.CHANNEL, handle_channel_post))
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.LOCATION, handle_channel_location))
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.TEXT, handle_channel_order))
 

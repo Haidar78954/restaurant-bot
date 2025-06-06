@@ -20,6 +20,8 @@ from telegram.ext import ContextTypes
 from telegram.request import HTTPXRequest
 from collections import deque
 from telegram.error import NetworkError
+from telegram.ext import ChannelPostHandler
+
 
 order_rate_lock = Lock()
 last_order_time = 0  # بالثواني

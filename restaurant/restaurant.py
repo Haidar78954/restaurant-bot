@@ -780,11 +780,21 @@ async def button(update: Update, context: CallbackContext):
         # ✅ تحليل خاص لأزرار اختيار الدليفري
         if data.startswith("select_delivery|"):
             parts = data.split("|")
-            if len(parts) != 4:
+            if len(parts) != 3:
                 logger.warning("⚠️ بيانات الدليفري غير صالحة.")
                 return
+        
+            _, order_id, index = parts
+        
+            delivery_list = context.user_data.get(f"delivery_choice_{order_id}", [])
+            try:
+                delivery = delivery_list[int(index)]
+                delivery_name = delivery["name"]
+                delivery_phone = delivery["phone"]
+            except (IndexError, ValueError):
+                await query.answer("⚠️ لم يتم العثور على بيانات الدليفري.", show_alert=True)
+                return
 
-            _, order_id, delivery_name, delivery_phone = parts
 
             if order_id not in pending_orders:
                 logger.warning(f"⚠️ الطلب غير موجود ضمن pending_orders: {order_id}")
@@ -937,13 +947,22 @@ async def button(update: Update, context: CallbackContext):
                 if not delivery_persons:
                     await query.answer("⚠️ لا يوجد دليفري مسجل حالياً.", show_alert=True)
                     return
+            
+                # ✅ حفظ قائمة الدليفري في user_data
+                context.user_data[f"delivery_choice_{order_id}"] = delivery_persons
+            
                 keyboard = []
-                for dp in delivery_persons:
+                for i, dp in enumerate(delivery_persons):  # ✅ استخدم enumerate
                     name, phone = dp["name"], dp["phone"]
-                    callback_data = f"select_delivery|{order_id}|{name}|{phone}"
+                    callback_data = f"select_delivery|{order_id}|{i}"
                     keyboard.append([InlineKeyboardButton(f"{name} ({phone})", callback_data=callback_data)])
-                keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data=f"time_{order_info.get('selected_time', '0')}_{order_id}")])
+            
+                keyboard.append([
+                    InlineKeyboardButton("🔙 رجوع", callback_data=f"time_{order_info.get('selected_time', '0')}_{order_id}")
+                ])
+            
                 await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(keyboard))
+
 
             elif action == "complain":
                 await query.edit_message_reply_markup(
@@ -1944,8 +1963,10 @@ ORDER_NUMBER_PATTERNS = [
     r"رقم الطلب:?\s*[`\"']?(\d+)[`\"']?",
     r"🔢.*?[`\"']?(\d+)[`\"']?",
     r"order_number:?\s*[`\"']?(\d+)[`\"']?",
-    r"استلم طلبه رقم (\d+)"  # ✅ النمط الجديد
+    r"استلم طلبه رقم (\d+)",
+    r"تحضير الطلب رقم (\d+)"
 ]
+
 
 
 def extract_order_id(text):

@@ -1552,19 +1552,6 @@ async def handle_rating_message(update: Update, context: CallbackContext):
 
 
 
-async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # مرّر الرسالة لجميع الهاندلرات الخاصة بالقناة
-    await handle_reminder_message(update, context)
-    await handle_time_left_question(update, context)
-    await handle_rating_feedback(update, context)
-    await handle_order_delivered_rating(update, context)
-    await handle_report_cancellation_notice(update, context)
-    await handle_standard_cancellation_notice(update, context)
-    await handle_rating_message(update, context)
-
-
-
-
 
 async def handle_delivery_menu(update: Update, context: CallbackContext):
     context.user_data["delivery_action"] = "menu"
@@ -1992,7 +1979,15 @@ async def run_bot():
     app.add_error_handler(handle_network_error)
 
     # ✅ رسائل التذكير
-    app.add_handler(MessageHandler(filters.ChatType.CHANNEL, handle_channel_post))
+    app.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.Regex("تذكير من الزبون"), handle_channel_reminder))
+    app.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.Regex("كم يتبقى.*الطلب رقم"), handle_time_left_question))
+    app.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.Regex("استلم طلبه رقم .*معرف الطلب"), handle_order_delivered_rating))
+    app.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.Regex("💬 سبب الإلغاء:"), handle_report_cancellation_notice))
+    app.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.Regex("🚫 تم إلغاء الطلب رقم"), handle_standard_cancellation_notice))
+    app.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.Regex("قام بتقييمه بـ"), handle_rating_message))
+    app.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.LOCATION, handle_channel_location))
+    app.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.TEXT, handle_channel_order))
+
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.LOCATION, handle_channel_location))
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.TEXT, handle_channel_order))
 

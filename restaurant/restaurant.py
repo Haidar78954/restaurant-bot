@@ -1128,6 +1128,8 @@ async def get_all_delivery_persons():
 
 # 🔔 إعادة إرسال التذكير كما هو
 async def handle_channel_reminder(update: Update, context: CallbackContext):
+    logger.info(f"📡 تم استلام رسالة من القناة: chat_id={message.chat_id} | النص: {message.text}")
+
     message = update.channel_post
     if not message or message.chat_id != CHANNEL_ID:
         return
@@ -1176,6 +1178,8 @@ async def handle_channel_reminder(update: Update, context: CallbackContext):
 
 # 🔔 إعادة إرسال التذكير بصيغة أخرى
 async def handle_reminder_message(update: Update, context: CallbackContext):
+    logger.info(f"📡 تم استلام رسالة من القناة: chat_id={message.chat_id} | النص: {message.text}")
+
     message = update.channel_post
     if not message or message.chat_id != CHANNEL_ID:
         return
@@ -1214,6 +1218,8 @@ async def handle_reminder_message(update: Update, context: CallbackContext):
 
 # ⏳ استفسار "كم يتبقى؟"
 async def handle_time_left_question(update: Update, context: CallbackContext):
+    logger.info(f"📡 تم استلام رسالة من القناة: chat_id={message.chat_id} | النص: {message.text}")
+
     message = update.channel_post
     if not message or message.chat_id != CHANNEL_ID:
         return

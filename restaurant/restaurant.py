@@ -1132,41 +1132,34 @@ async def handle_channel_reminder(update: Update, context: CallbackContext):
     if not message or message.chat_id != CHANNEL_ID:
         return
 
-    logger.info(f"📡 تم استلام رسالة من القناة: chat_id={message.chat_id} | النص: {message.text}")
-
-
     text = message.text or ""
+    logger.info(f"📡 تم استلام رسالة من القناة: chat_id={message.chat_id} | النص: {text}")
+
     if "تذكير من الزبون" not in text:
         return
 
     logger.info(f"📥 استلم البوت تذكيرًا جديدًا: {text}")
 
-    # استخراج معرف الطلب
-    order_id = extract_order_id(text)
-    if not order_id:
-        logger.warning("⚠️ لم يتم العثور على معرف الطلب في التذكير.")
-        return
-
     try:
-        # 1. تجهيز النص
         reminder_text = f"🔔 *تذكير من الزبون!*\n\n{text}"
-
-        # 2. توليد message_id وتتبع الرسالة
         message_id = str(uuid.uuid4())
+
+        # اختياري: محاولة استخراج order_id إذا وُجد
+        order_id = extract_order_id(text)
+
         await track_sent_message(
             message_id=message_id,
-            order_id=order_id,
+            order_id=order_id or "unknown",
             source="restaurant_bot",
             destination="cashier",
             content=reminder_text
         )
 
-        # 3. الإرسال مع ربط message_id
         await send_message_with_retry(
             bot=context.bot,
             chat_id=CASHIER_CHAT_ID,
             text=reminder_text,
-            order_id=order_id,
+            order_id=order_id or "unknown",
             message_id=message_id,
             parse_mode="Markdown"
         )
@@ -1177,56 +1170,58 @@ async def handle_channel_reminder(update: Update, context: CallbackContext):
         logger.error(f"⚠️ خطأ أثناء إرسال التذكير إلى الكاشير: {e}")
 
 
-# 🔔 إعادة إرسال التذكير بصيغة أخرى
+
+
+# 🔔 إعادة إرسال التذكير بصيغة أخرى (إن رغبت بفصلها)
 async def handle_reminder_message(update: Update, context: CallbackContext):
-
-    message = update.channel_post
-    if not message or message.chat_id != CHANNEL_ID:
-        return
-
-    logger.info(f"📡 تم استلام رسالة من القناة: chat_id={message.chat_id} | النص: {message.text}")
-
-    if "تذكير من الزبون" in message.text:
-        logger.info("📌 تم استلام تذكير من الزبون، إعادة توجيهه للكاشير...")
-        try:
-            # 1. النص المراد إرساله
-            text = message.text
-        
-            # 2. توليد message_id فريد وتسجيل الرسالة
-            message_id = str(uuid.uuid4())
-            await track_sent_message(
-                message_id=message_id,
-                order_id=order_id,  # تأكد أن order_id معرف مسبقًا في نفس الدالة
-                source="restaurant_bot",
-                destination="cashier",
-                content=text
-            )
-        
-            # 3. الإرسال مع ربط message_id بالتتبع
-            await send_message_with_retry(
-                bot=context.bot,
-                chat_id=CASHIER_CHAT_ID,
-                text=text,
-                order_id=order_id,
-                message_id=message_id
-            )
-        
-            logger.info("✅ تم إرسال التذكير إلى الكاشير بنجاح.")
-        
-        except Exception as e:
-            logger.error(f"❌ خطأ أثناء إرسال التذكير للكاشير: {e}")
-
-
-
-# ⏳ استفسار "كم يتبقى؟"
-async def handle_time_left_question(update: Update, context: CallbackContext):
-    logger.info(f"📡 تم استلام رسالة من القناة: chat_id={message.chat_id} | النص: {message.text}")
-
     message = update.channel_post
     if not message or message.chat_id != CHANNEL_ID:
         return
 
     text = message.text or ""
+    logger.info(f"📡 تم استلام رسالة من القناة: chat_id={message.chat_id} | النص: {text}")
+
+    if "تذكير من الزبون" not in text:
+        return
+
+    try:
+        message_id = str(uuid.uuid4())
+        order_id = extract_order_id(text)
+
+        await track_sent_message(
+            message_id=message_id,
+            order_id=order_id or "unknown",
+            source="restaurant_bot",
+            destination="cashier",
+            content=text
+        )
+
+        await send_message_with_retry(
+            bot=context.bot,
+            chat_id=CASHIER_CHAT_ID,
+            text=text,
+            order_id=order_id or "unknown",
+            message_id=message_id
+        )
+
+        logger.info("✅ تم إعادة إرسال التذكير للكاشير.")
+
+    except Exception as e:
+        logger.error(f"❌ خطأ أثناء إرسال التذكير: {e}")
+
+
+
+
+
+# ⏳ استفسار "كم يتبقى؟"
+async def handle_time_left_question(update: Update, context: CallbackContext):
+    message = update.channel_post
+    if not message or message.chat_id != CHANNEL_ID:
+        return
+
+    text = message.text or ""
+    logger.info(f"📡 تم استلام رسالة من القناة: chat_id={message.chat_id} | النص: {text}")
+
     if "كم يتبقى" not in text or "الطلب رقم" not in text:
         return
 
@@ -1245,10 +1240,11 @@ async def handle_time_left_question(update: Update, context: CallbackContext):
                 f"🔁 ارجع لرسالة الطلب واختر الوقت من الأزرار المرفقة تحتها 🙏"
             )
         )
-        logger.info(f"✅ تم إرسال إشعار استفسار المدة للكاشير للطلب رقم {order_number}.")
+        logger.info(f"✅ تم إرسال إشعار المدة للكاشير (طلب رقم {order_number}).")
 
     except Exception as e:
-        logger.error(f"❌ فشل في إرسال إشعار الوقت للكاشير: {e}")
+        logger.error(f"❌ فشل في إرسال إشعار المدة للكاشير: {e}")
+
 
 
 # ⭐ استلام التقييم من الزبون

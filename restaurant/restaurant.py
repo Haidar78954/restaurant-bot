@@ -1550,6 +1550,15 @@ async def handle_rating_message(update: Update, context: CallbackContext):
 
 
 
+async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # مرّر الرسالة لجميع الهاندلرات الخاصة بالقناة
+    await handle_reminder_message(update, context)
+    await handle_time_left_question(update, context)
+    await handle_rating_feedback(update, context)
+    await handle_order_delivered_rating(update, context)
+    await handle_report_cancellation_notice(update, context)
+    await handle_standard_cancellation_notice(update, context)
+    await handle_rating_message(update, context)
 
 
 
@@ -1980,22 +1989,8 @@ async def run_bot():
 
     app.add_error_handler(handle_network_error)
 
-    # ✅ إشعار تقييم الطلب من الزبون
-    app.add_handler(MessageHandler(
-        filters.ChatType.CHANNEL & filters.Regex(r"^✅ الزبون استلم طلبه رقم \d+ وقام بتقييمه بـ .+?\n📌 معرف الطلب: "),
-        handle_order_delivered_rating
-    ))
-
-    # ✅ إشعارات الإلغاء
-    app.add_handler(MessageHandler(
-    filters.ChatType.CHANNEL & filters.Regex(r"🚫 تم إلغاء الطلب رقم \d+ من قبل الزبون.*📌 معرف الطلب:"),
-    handle_standard_cancellation_notice
-))
-    app.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.Regex("تأخر المطعم.*تم إنشاء تقرير"), handle_report_cancellation_notice))
-
     # ✅ رسائل التذكير
-    app.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.Regex(r"تذكير من الزبون"), handle_channel_reminder))
-    app.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.Regex(r"كم يتبقى.*الطلب رقم"), handle_time_left_question))
+    app.add_handler(ChannelPostHandler(handle_channel_post))
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.LOCATION, handle_channel_location))
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.TEXT, handle_channel_order))
 
